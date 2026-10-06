@@ -1,0 +1,13 @@
+.git
+.github
+.vscode
+node_modules
+dist
+coverage
+.env
+.env.*
+!.env.example
+!.env.docker.example
+database.db
+user.db
+npm-debug.log*
