@@ -1,6 +1,6 @@
 # mmoproxy
 
-CCW MMO 账号聚合项目，文档懒得写了 来个好心人写一下吧，推pr就可以了。
+CCW MMO 账号聚合项目。
 
 ## 开发
 
@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-前端地址为 `http://localhost:5173`，Express API 运行在 `http://localhost:3000`。Vite 会将 `/api` 请求代理到后端。
+Express API 运行在 `http://localhost:3000`。Vite 会将 `/api` 请求代理到后端。
 
 ## 构建与启动
 
@@ -21,6 +21,27 @@ npm start
 前端静态文件输出到 `dist/frontend`，后端使用 esbuild 将入口和依赖打包为单个 `dist/backend/index.cjs`。生产服务默认监听 `3000` 端口，可通过 `PORT` 环境变量调整。
 
 应用会自动加载项目根目录的 `.env` 文件。可从 `.env.example` 复制后填写配置；敏感配置文件已加入 `.gitignore`。系统设置页面保存 `.env` 后，会立即重载当前进程中的易支付参数。
+
+## Docker 部署
+
+复制 Docker Compose 环境变量模板并修改数据库密码：
+
+```sh
+cp .env.docker.example .env
+```
+
+设置 `DB_PASSWORD` 和 `MARIADB_ROOT_PASSWORD` 为不同的强密码后启动：
+
+```sh
+docker compose up --build -d
+```
+
+应用运行在 `http://localhost:3000`，HTTP/WebSocket 代理端口为 `9989`。Compose 会自动启动 MariaDB 和 Redis，并为应用配置 MySQL 及 Redis 连接；数据库和 Redis 只在 Compose 内部网络开放。MariaDB 和 Redis 数据分别保存在 Docker 命名卷中。查看日志或停止服务：
+
+```sh
+docker compose logs -f app
+docker compose down
+```
 
 ## 数据库配置
 
