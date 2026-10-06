@@ -1,0 +1,46 @@
+{
+  "name": "ccwmmoproxy",
+  "version": "0.1.0",
+  "description": "a aggregation of ccwmmo accounts",
+  "homepage": "https://github.com/CCWTool/mmoproxy#readme",
+  "bugs": {
+    "url": "https://github.com/CCWTool/mmoproxy/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CCWTool/mmoproxy.git"
+  },
+  "license": "AGPL-3.0-or-later",
+  "author": "",
+  "type": "module",
+  "main": "dist/backend/index.cjs",
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "node --watch src/backend/index.js",
+    "dev:frontend": "vite --config src/frontend/vite.config.js --host 0.0.0.0",
+    "build": "npm run build:frontend && npm run build:backend",
+    "build:frontend": "vite build --config src/frontend/vite.config.js",
+    "build:backend": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('dist/backend', { recursive: true, force: true })\" && esbuild src/backend/index.js --bundle --platform=node --format=cjs --target=node18 --external:better-sqlite3 --external:mysql2 --external:redis --minify --outfile=dist/backend/index.cjs",
+    "start": "node dist/backend/index.cjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "dotenv": "^18.0.5",
+    "express": "^5.1.0",
+    "http-proxy": "^1.18.1",
+    "mysql": "^2.18.1",
+    "mysql2": "^3.24.5",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "redis": "^4.7.0",
+    "ws": "^8.18.3",
+    "yifanepay": "^1.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.0",
+    "esbuild": "^0.25.12",
+    "vite": "^6.3.5"
+  }
+}
