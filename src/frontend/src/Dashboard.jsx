@@ -91,6 +91,12 @@ function PermissionTags({ permissions }) {
   );
 }
 
+const paymentTypeNames = {
+  alipay: '支付宝支付',
+  wxpay: '微信支付',
+  usdt: 'USDT(TRC20) 支付',
+};
+
 export default function Dashboard({ user, onLogout }) {
   const [section, setSection] = useState('home');
   const [readme, setReadme] = useState('');
@@ -99,7 +105,8 @@ export default function Dashboard({ user, onLogout }) {
   const [userKeys, setUserKeys] = useState([]);
   const [profile, setProfile] = useState({ username: user.username, balanceFen: 0 });
   const [rechargeAmount, setRechargeAmount] = useState('10.00');
-  const [paymentUrl, setPaymentUrl] = useState('');
+  const [paymentTypes, setPaymentTypes] = useState(['alipay']);
+  const [paymentType, setPaymentType] = useState('alipay');
   const [voucherCode, setVoucherCode] = useState('');
   const [configuration, setConfiguration] = useState('');
   const [voucherAmount, setVoucherAmount] = useState('10.00');
@@ -131,7 +138,11 @@ export default function Dashboard({ user, onLogout }) {
   useEffect(() => {
     if (section === 'account') {
       api('/api/user/profile')
-        .then(setProfile)
+        .then((userProfile) => {
+          setProfile(userProfile);
+          setPaymentTypes(userProfile.paymentTypes);
+          setPaymentType(userProfile.paymentTypes[0]);
+        })
         .catch((loadError) => setError(loadError.message));
     }
     if (section === 'settings' && canManageConfig) {
@@ -324,10 +335,10 @@ export default function Dashboard({ user, onLogout }) {
     await runAction(async () => {
       const { paymentUrl: url } = await api('/api/user/recharge', {
         method: 'POST',
-        body: JSON.stringify({ amount: rechargeAmount }),
+        body: JSON.stringify({ amount: rechargeAmount, paymentType }),
       });
-      setPaymentUrl(url);
-    }, '充值订单已创建，请点击下方链接完成支付。');
+      window.location.assign(url);
+    }, '正在前往支付页面。');
   }
 
   async function redeemVoucher(event) {
@@ -455,11 +466,19 @@ export default function Dashboard({ user, onLogout }) {
               </div>
               <div className="content-card billing-card">
                 <div className="card-heading"><div><h2>充值</h2><p>支持易支付在线充值，支付成功后余额自动到账。</p></div></div>
-                <form className="key-create-form" onSubmit={startRecharge}>
+                <form className="key-create-form recharge-form" onSubmit={startRecharge}>
                   <label><span>充值金额（元）</span><input type="number" min="1" max="1000000" step="0.01" value={rechargeAmount} onChange={(event) => setRechargeAmount(event.target.value)} required /></label>
-                  <button className="primary-button" type="submit" disabled={busy}>易支付</button>
+                  <fieldset className="payment-methods">
+                    <legend>支付方式</legend>
+                    {paymentTypes.map((type) => (
+                      <label className={`payment-method-option${paymentType === type ? ' selected' : ''}`} key={type}>
+                        <input type="radio" name="paymentType" value={type} checked={paymentType === type} onChange={() => setPaymentType(type)} />
+                        <span>{paymentTypeNames[type] || type}</span>
+                      </label>
+                    ))}
+                  </fieldset>
+                  <button className="primary-button" type="submit" disabled={busy}>确定</button>
                 </form>
-                {paymentUrl && <a className="payment-link" href={paymentUrl} target="_blank" rel="noreferrer">前往易支付完成付款 ↗</a>}
               </div>
               <div className="content-card billing-card">
                 <div className="card-heading"><div><h2>兑换码</h2><p>输入 256 位十六进制兑换码，成功兑换后余额即时增加。</p></div></div>

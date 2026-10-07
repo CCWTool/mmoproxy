@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import {
     createPaymentUrl,
+    getPaymentTypes,
     hashVoucher,
     newOrderNumber,
     newVoucherCode,
@@ -61,18 +62,29 @@ test('creates a payment checkout URL with configured Epay credentials', () => {
         EPAY_PID: 'merchant-1',
         EPAY_KEY: 'secret',
         EPAY_URL: 'https://pay.example.test/',
-        EPAY_TYPE: 'alipay',
+        EPAY_TYPE: 'alipay, wxpay',
     });
     try {
+        assert.deepEqual(getPaymentTypes(), ['alipay', 'wxpay']);
         const url = createPaymentUrl({
             amountFen: 1234,
             orderNo: 'order-1',
             baseUrl: 'https://proxy.example.test',
+            paymentType: 'wxpay',
         });
-        assert.match(url, /^https:\/\/pay\.example\.test\/submit\.php\?/);
-        assert.match(url, /money=12\.34/);
-        assert.match(url, /out_trade_no=order-1/);
-        assert.match(url, /notify_url=https:\/\/proxy\.example\.test\/api\/payments\/epay\/notify/);
+        const checkoutUrl = new URL(url);
+        assert.equal(checkoutUrl.origin, 'https://pay.example.test');
+        assert.equal(checkoutUrl.pathname, '/submit.php');
+        assert.equal(checkoutUrl.searchParams.get('money'), '12.34');
+        assert.equal(checkoutUrl.searchParams.get('out_trade_no'), 'order-1');
+        assert.equal(checkoutUrl.searchParams.get('notify_url'), 'https://proxy.example.test/api/payments/epay/notify');
+        assert.equal(checkoutUrl.searchParams.get('type'), 'wxpay');
+        assert.throws(() => createPaymentUrl({
+            amountFen: 1234,
+            orderNo: 'order-1',
+            baseUrl: 'https://proxy.example.test',
+            paymentType: 'unsupported',
+        }), /不支持的支付方式/);
     } finally {
         for (const [key, value] of Object.entries(original)) {
             if (value === undefined) delete process.env[key];

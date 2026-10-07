@@ -22,9 +22,20 @@ function verifyEpayCallback(params, key) {
     return timingSafeEqual(Buffer.from(received, 'hex'), expected);
 }
 
-function createPaymentUrl({ amountFen, orderNo, baseUrl }) {
+function getPaymentTypes() {
+    const configuredTypes = (process.env.EPAY_TYPE || 'alipay')
+        .split(',')
+        .map((type) => type.trim())
+        .filter(Boolean);
+    return configuredTypes.length > 0 ? configuredTypes : ['alipay'];
+}
+
+function createPaymentUrl({ amountFen, orderNo, baseUrl, paymentType }) {
     const { EPAY_PID: pid, EPAY_KEY: key, EPAY_URL: gatewayUrl } = process.env;
     if (!pid || !key || !gatewayUrl) throw new Error('易支付参数未配置，请联系管理员。');
+
+    const type = paymentType || getPaymentTypes()[0];
+    if (!getPaymentTypes().includes(type)) throw new Error('不支持的支付方式。');
 
     let gateway;
     try {
@@ -45,7 +56,7 @@ function createPaymentUrl({ amountFen, orderNo, baseUrl }) {
         out_trade_no: orderNo,
         return_url: `${origin}/`,
         sitename: process.env.EPAY_SITENAME || 'mmoproxy',
-        type: process.env.EPAY_TYPE || 'alipay',
+        type,
     };
     return yifanepay.outcome(key, `${gateway.toString().replace(/\/?$/, '/')}`, data);
 }
@@ -64,6 +75,7 @@ function newVoucherCode() {
 
 export {
     createPaymentUrl,
+    getPaymentTypes,
     hashVoucher,
     newOrderNumber,
     newVoucherCode,
