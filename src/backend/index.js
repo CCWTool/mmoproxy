@@ -9,6 +9,7 @@ import { deleteUserSession, validateUserSession } from './session.js';
 import { attachProxy } from './proxy.js';
 import {
     createPaymentUrl,
+    getPaymentTypes,
     newOrderNumber,
     verifyEpayCallback,
     yuanToFen,
@@ -109,7 +110,11 @@ app.get('/api/user/profile', async (request, response) => {
         const user = await getAuthenticatedUser(request);
         if (!user) return response.status(401).json({ message: '请先登录。' });
         response.set('Cache-Control', 'no-store');
-        return response.json({ username: user.username, balanceFen: user.balanceFen });
+        return response.json({
+            username: user.username,
+            balanceFen: user.balanceFen,
+            paymentTypes: getPaymentTypes(),
+        });
     } catch (error) {
         console.error('Error reading user profile:', error);
         return response.status(500).json({ message: '无法读取个人中心信息。' });
@@ -124,9 +129,13 @@ app.post('/api/user/recharge', async (request, response) => {
         if (!amountFen || amountFen < 100 || amountFen > 100_000_000) {
             return response.status(400).json({ message: '充值金额须为 1.00 至 1,000,000.00 元，最多两位小数。' });
         }
+        const paymentType = request.body?.paymentType;
+        if (typeof paymentType !== 'string' || !getPaymentTypes().includes(paymentType)) {
+            return response.status(400).json({ message: '请选择有效的支付方式。' });
+        }
         const orderNo = newOrderNumber();
         const baseUrl = `${request.protocol}://${request.get('host')}`;
-        const paymentUrl = createPaymentUrl({ amountFen, orderNo, baseUrl });
+        const paymentUrl = createPaymentUrl({ amountFen, orderNo, baseUrl, paymentType });
         await db.createPaymentOrder(user.id, amountFen, orderNo);
         response.set('Cache-Control', 'no-store');
         return response.status(201).json({ paymentUrl });

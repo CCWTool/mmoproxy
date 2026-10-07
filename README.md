@@ -87,7 +87,7 @@ DB_TYPE=mysql DB_HOST=localhost DB_PORT=3306 DB_USER=user DB_PASSWORD=password D
 
 - `EPAY_URL`：易支付网关地址（以 `/` 结尾）。
 - `EPAY_PID`、`EPAY_KEY`：商户编号和商户密钥。
-- `EPAY_TYPE`：支付方式，默认为 `alipay`。
+- `EPAY_TYPE`：支付方式，默认为 `alipay`；多个支付方式可用逗号分隔（例如 `alipay,wxpay`），用户充值时可选择。
 - `EPAY_SITENAME`：支付页面显示的网站名称。
 
 管理员可在“系统设置”中生成带面额的兑换码。兑换码是 256 位十六进制随机数，只显示一次，数据库仅保存其 SHA-256 摘要，且每个兑换码只能成功兑换一次。
