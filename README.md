@@ -24,13 +24,13 @@ npm start
 
 ## Docker 部署
 
-复制 Docker Compose 环境变量模板并修改数据库密码：
+复制 Docker Compose 环境变量模板并填写数据库密码和所有易支付参数：
 
 ```sh
 cp .env.docker.example .env
 ```
 
-设置 `DB_PASSWORD` 和 `MARIADB_ROOT_PASSWORD` 为不同的强密码后启动：
+将 `DB_PASSWORD` 和 `MARIADB_ROOT_PASSWORD` 设置为不同的强密码，并填写 `EPAY_URL`、`EPAY_PID`、`EPAY_KEY`、`EPAY_TYPE` 和 `EPAY_SITENAME` 后启动。Compose 会在任一易支付参数为空时拒绝启动：
 
 ```sh
 docker compose up --build -d
