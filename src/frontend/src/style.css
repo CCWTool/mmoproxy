@@ -98,6 +98,51 @@ a {
   text-decoration: none;
 }
 
+.brand-group,
+.dashboard-brand-group {
+  display: flex;
+  align-items: center;
+}
+
+.brand-group {
+  gap: 13px;
+}
+
+.dashboard-brand-group {
+  justify-content: space-between;
+  padding: 0 10px;
+}
+
+.github-link {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e5eae4;
+  border-radius: 7px;
+  color: #58645a;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.github-link:hover {
+  border-color: #cbd9cc;
+  background: #f5f8f4;
+  color: var(--green);
+}
+
+.github-link:focus-visible {
+  outline: 3px solid rgb(79 130 91 / 35%);
+  outline-offset: 3px;
+}
+
+.github-link svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+
 .brand-mark {
   display: inline-grid;
   width: 34px;
@@ -575,7 +620,7 @@ a {
 }
 
 .dashboard-brand {
-  padding: 0 10px;
+  padding: 0;
 }
 
 .dashboard-brand .brand-mark {

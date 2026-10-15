@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import GitHubLink from './GitHubLink.jsx';
 
 const permissionOptions = [
   ['user.plan.read', '查看套餐'],
@@ -151,7 +152,7 @@ export default function Dashboard({ user, onLogout }) {
         .catch((loadError) => setError(loadError.message));
     }
     if (section === 'home' && !readme) {
-      api('/api/readme')
+      api('/api/touser')
         .then(setReadme)
         .catch((loadError) => setError(loadError.message));
     }
@@ -390,10 +391,13 @@ export default function Dashboard({ user, onLogout }) {
   return (
     <div className="dashboard">
       <aside className="dashboard-sidebar">
-        <a className="brand dashboard-brand" href="/" aria-label="mmoproxy 首页">
-          <span className="brand-mark" aria-hidden="true">m</span>
-          <span className="brand-name">mmoproxy</span>
-        </a>
+        <div className="dashboard-brand-group">
+          <a className="brand dashboard-brand" href="/" aria-label="mmoproxy 首页">
+            <span className="brand-mark" aria-hidden="true">m</span>
+            <span className="brand-name">mmoproxy</span>
+          </a>
+          <GitHubLink />
+        </div>
         <p className="sidebar-caption">工作空间</p>
         <nav className="sidebar-nav" aria-label="主导航">
           {navigation.map((item) => (
@@ -433,7 +437,7 @@ export default function Dashboard({ user, onLogout }) {
             <div className="content-card readme-card">
               <div className="page-heading">
                 <div><p className="page-eyebrow">DOCUMENTATION</p><h1>项目说明</h1></div>
-                <span className="file-pill">README.md</span>
+                <span className="file-pill">TOUSER.md</span>
               </div>
               {readme ? <Readme markdown={readme} /> : <p className="loading-note">正在读取项目文档…</p>}
             </div>

@@ -84,14 +84,14 @@ function validateApiKeyName(name) {
     return typeof name === 'string' && name.trim().length > 0 && name.trim().length <= 64;
 }
 
-app.get('/api/readme', async (_request, response) => {
+app.get('/api/touser', async (_request, response) => {
     try {
-        const readme = await readFile(path.resolve(process.cwd(), 'README.md'), 'utf8');
+        const documentation = await readFile(path.resolve(process.cwd(), 'TOUSER.md'), 'utf8');
         response.set('Cache-Control', 'no-cache');
-        return response.type('text/markdown').send(readme);
+        return response.type('text/markdown').send(documentation);
     } catch (error) {
-        console.error('Error reading README.md:', error);
-        return response.status(500).json({ message: '无法读取 README.md。' });
+        console.error('Error reading TOUSER.md:', error);
+        return response.status(500).json({ message: '无法读取 TOUSER.md。' });
     }
 });
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Dashboard from './Dashboard.jsx';
+import GitHubLink from './GitHubLink.jsx';
 
 function BrandMark() {
   return (
@@ -137,10 +138,13 @@ export default function App() {
       <div className="ambient ambient-two" aria-hidden="true" />
 
       <header className="site-header">
-        <a className="brand" href="/" aria-label="mmoproxy">
-          <BrandMark />
-          <span className="brand-name">mmoproxy</span>
-        </a>
+        <div className="brand-group">
+          <a className="brand" href="/" aria-label="mmoproxy">
+            <BrandMark />
+            <span className="brand-name">mmoproxy</span>
+          </a>
+          <GitHubLink />
+        </div>
         <span className="header-note"><span className="header-dot" />{isRegistering ? '创建账号' : '安全登录'}</span>
       </header>
 
