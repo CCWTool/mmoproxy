@@ -71,6 +71,28 @@ function buildUpstreamHeaders(request, configuredHeaders, cookie) {
     return headers;
 }
 
+function getProxyToken(request) {
+    const bearer = request.headers.authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    if (bearer) return bearer;
+
+    const requestUrl = new URL(request.url, 'http://localhost');
+    const tokens = requestUrl.searchParams.getAll('token');
+    return tokens.length === 1 && tokens[0] ? tokens[0] : null;
+}
+
+function removeTokenQueryParameter(request) {
+    const queryIndex = request.url.indexOf('?');
+    if (queryIndex === -1) return;
+
+    const path = request.url.slice(0, queryIndex);
+    const query = request.url.slice(queryIndex + 1);
+    const forwardedParameters = query.split('&').filter((parameter) => {
+        const name = new URLSearchParams(parameter).keys().next().value;
+        return name !== 'token';
+    });
+    request.url = path + (forwardedParameters.length ? `?${forwardedParameters.join('&')}` : '');
+}
+
 function writeHttpError(socket, status, message) {
     if (socket.destroyed) return;
     const body = `${message}\n`;
@@ -155,15 +177,15 @@ function attachProxy(server, database, {
     });
 
     async function handleHttpRequest(request, response) {
-        const bearer = request.headers.authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
-        if (!bearer) {
+        const token = getProxyToken(request);
+        if (!token) {
             writeHttpResponse(response, 401, 'Unauthorized');
             return;
         }
 
         let userId;
         try {
-            userId = await database.validateBearerToken(bearer);
+            userId = await database.validateBearerToken(token);
         } catch (error) {
             console.error('Unable to validate HTTP proxy token:', error.message);
             writeHttpResponse(response, 500, 'Internal Server Error');
@@ -190,6 +212,7 @@ function attachProxy(server, database, {
 
         try {
             const cookie = await getRandomPoolCookie(database);
+            removeTokenQueryParameter(request);
             request.headers = buildUpstreamHeaders(request, configuredHeaders, cookie);
             proxy.web(request, response, {
                 changeOrigin: true,
@@ -215,15 +238,15 @@ function attachProxy(server, database, {
     server.once('close', () => proxy.close());
 
     async function handleUpgrade(request, socket, head) {
-        const bearer = request.headers.authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
-        if (!bearer) {
+        const token = getProxyToken(request);
+        if (!token) {
             writeHttpError(socket, 401, 'Unauthorized');
             return;
         }
 
         let userId;
         try {
-            userId = await database.validateBearerToken(bearer);
+            userId = await database.validateBearerToken(token);
         } catch (error) {
             console.error('Unable to validate WebSocket proxy token:', error.message);
             writeHttpError(socket, 500, 'Internal Server Error');
@@ -262,6 +285,7 @@ function attachProxy(server, database, {
 
         try {
             const cookie = await getRandomPoolCookie(database);
+            removeTokenQueryParameter(request);
             request.headers = buildUpstreamHeaders(request, configuredHeaders, cookie);
             proxy.ws(request, socket, head, {
                 changeOrigin: true,

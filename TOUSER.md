@@ -8,6 +8,8 @@
 
 在左侧的“密钥管理”页面创建访问密钥。发起 HTTP 或 WebSocket 代理请求时，在 `Authorization` 请求头中使用 `Bearer <你的密钥>`。
 
+无法方便设置请求头时，可通过 `?token=<token>` GET 参数携带访问密钥，HTTP 和 WebSocket 均支持。查询参数中的令牌不会转发给上游，但可能被浏览器、代理或服务日志记录，因此优先推荐使用 `Authorization: Bearer <token>` 请求头。
+
 ## 获取帮助
 
 如无法使用某项功能，请联系服务管理员确认账号权限和余额。

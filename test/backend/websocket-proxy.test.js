@@ -432,10 +432,20 @@ test('proxies HTTP requests with pool cookies and the same filtered headers', as
         assert.equal(chargeCalls, 1);
         assert.equal(poolLookupCalls, 1);
 
+        const queryTokenResponse = await fetch(
+            `http://127.0.0.1:${server.address().port}/api/query?token=valid-token&query=2`,
+        );
+        assert.equal(queryTokenResponse.status, 200);
+        assert.equal(await queryTokenResponse.text(), 'upstream response');
+        assert.equal(upstreamRequest.url, '/api/query?query=2');
+        assert.equal(tokenValidationCalls, 2);
+        assert.equal(chargeCalls, 2);
+        assert.equal(poolLookupCalls, 2);
+
         const unauthorizedResponse = await fetch(`http://127.0.0.1:${server.address().port}/unauthorized`);
         assert.equal(unauthorizedResponse.status, 401);
-        assert.equal(chargeCalls, 1);
-        assert.equal(poolLookupCalls, 1);
+        assert.equal(chargeCalls, 2);
+        assert.equal(poolLookupCalls, 2);
     } finally {
         await Promise.all([
             new Promise((resolve) => server.close(resolve)),
@@ -486,6 +496,53 @@ test('rejects unauthenticated WebSocket upgrades before consulting the number po
         assert.equal(tokenValidationCalls, 0);
         assert.match(await requestUpgrade('Bearer invalid-key'), /^HTTP\/1\.1 401 Unauthorized/);
         assert.equal(tokenValidationCalls, 1);
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+});
+
+test('accepts a query token on WebSocket upgrades', async () => {
+    let validatedToken;
+    let poolLookupCalls = 0;
+    const server = createServer();
+    attachProxy(server, {
+        async validateBearerToken(token) {
+            validatedToken = token;
+            return 42;
+        },
+        async chargeUserMinute() { return false; },
+        async getRandomNumberPoolEntry() {
+            poolLookupCalls += 1;
+            return null;
+        },
+    }, {
+        host: '127.0.0.1',
+        port: 9989,
+        upstreamUrl: 'wss://ws.example.com',
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+    try {
+        const response = await new Promise((resolve, reject) => {
+            const socket = connect(server.address().port, '127.0.0.1');
+            let body = '';
+            socket.once('connect', () => {
+                socket.write(
+                    'GET /socket?token=valid-token HTTP/1.1\r\n' +
+                    'Host: localhost\r\n' +
+                    'Upgrade: websocket\r\n' +
+                    'Connection: Upgrade\r\n' +
+                    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+                    'Sec-WebSocket-Version: 13\r\n\r\n',
+                );
+            });
+            socket.on('data', (chunk) => { body += chunk; });
+            socket.once('end', () => resolve(body));
+            socket.once('error', reject);
+        });
+        assert.match(response, /^HTTP\/1\.1 402 Payment Required/);
+        assert.equal(validatedToken, 'valid-token');
+        assert.equal(poolLookupCalls, 0);
     } finally {
         await new Promise((resolve) => server.close(resolve));
     }

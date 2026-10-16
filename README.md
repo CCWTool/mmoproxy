@@ -98,6 +98,8 @@ DB_TYPE=mysql DB_HOST=localhost DB_PORT=3306 DB_USER=user DB_PASSWORD=password D
 
 HTTP 和 WebSocket 流量均由 `http-proxy` 库负责转发。
 
+通常通过 `Authorization: Bearer <token>` 请求头携带访问令牌；客户端不方便设置请求头时，也可通过 `?token=<token>` GET 参数携带（HTTP 和 WebSocket 握手均支持）。查询参数中的令牌不会转发给上游。由于 URL 可能被浏览器、代理或服务日志记录，请优先使用请求头。
+
 每个连接都必须提供 `Authorization: Bearer <key>`。`bearer_tokens` 表用 `key` 主键索引令牌，并用 `id` 关联 `users.id`；只有表中关联到现存用户的令牌才会获准连接。令牌由部署方写入数据库，例如：
 
 ```sql
