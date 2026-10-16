@@ -1,5 +1,6 @@
 import httpProxy from 'http-proxy';
 import { getRandomPoolCookie, NumberPoolError } from './number-pool.js';
+import { createCorsHeaders, isCorsPreflightRequest, setCorsHeaders } from './cors.js';
 
 const hopByHopHeaders = new Set([
     'connection',
@@ -179,7 +180,18 @@ function attachProxy(server, database, {
         }
     });
 
+    proxy.on('proxyRes', (proxyResponse, request) => {
+        Object.assign(proxyResponse.headers, createCorsHeaders(request, proxyResponse.headers));
+    });
+
     async function handleHttpRequest(request, response) {
+        setCorsHeaders(request, response);
+        if (isCorsPreflightRequest(request)) {
+            response.writeHead(204);
+            response.end();
+            return;
+        }
+
         const token = getProxyToken(request);
         if (!token) {
             writeHttpResponse(response, 401, 'Unauthorized');

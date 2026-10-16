@@ -386,7 +386,11 @@ test('proxies HTTP requests with pool cookies and the same filtered headers', as
                 method: request.method,
                 url: request.url,
             };
-            response.writeHead(200, { 'Content-Type': 'text/plain' });
+            response.writeHead(200, {
+                'Access-Control-Allow-Origin': 'https://upstream.example',
+                'Content-Type': 'text/plain',
+                Vary: 'Accept-Encoding',
+            });
             response.end('upstream response');
         });
     });
@@ -421,17 +425,36 @@ test('proxies HTTP requests with pool cookies and the same filtered headers', as
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
     try {
+        const preflightResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/data`, {
+            method: 'OPTIONS',
+            headers: {
+                Origin: 'https://client.example',
+                'Access-Control-Request-Headers': 'authorization, content-type',
+                'Access-Control-Request-Method': 'POST',
+            },
+        });
+        assert.equal(preflightResponse.status, 204);
+        assert.equal(preflightResponse.headers.get('access-control-allow-origin'), 'https://client.example');
+        assert.equal(preflightResponse.headers.get('access-control-allow-credentials'), 'true');
+        assert.equal(preflightResponse.headers.get('access-control-allow-methods').includes('POST'), true);
+        assert.equal(preflightResponse.headers.get('access-control-allow-headers'), 'authorization, content-type');
+        assert.equal(tokenValidationCalls, 0);
+
         const response = await fetch(`http://127.0.0.1:${server.address().port}/api/data?query=1`, {
             method: 'POST',
             headers: {
                 Authorization: 'Bearer valid-token',
                 Cookie: 'client-cookie=must-not-forward',
                 'Content-Type': 'text/plain',
+                Origin: 'https://client.example',
                 'X-Request-Id': 'request-1',
             },
             body: 'request body',
         });
         assert.equal(response.status, 200);
+        assert.equal(response.headers.get('access-control-allow-origin'), 'https://client.example');
+        assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+        assert.equal(response.headers.get('vary'), 'Accept-Encoding, Origin');
         assert.equal(await response.text(), 'upstream response');
         assert.deepEqual({
             body: upstreamRequest.body,
@@ -462,6 +485,7 @@ test('proxies HTTP requests with pool cookies and the same filtered headers', as
 
         const unauthorizedResponse = await fetch(`http://127.0.0.1:${server.address().port}/unauthorized`);
         assert.equal(unauthorizedResponse.status, 401);
+        assert.equal(unauthorizedResponse.headers.get('access-control-allow-credentials'), 'true');
         assert.equal(chargeCalls, 2);
         assert.equal(poolLookupCalls, 2);
     } finally {

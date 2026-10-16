@@ -7,6 +7,7 @@ import { chmod, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import db, { knownPermissions } from './db.js';
 import { deleteUserSession, validateUserSession } from './session.js';
 import { attachProxy } from './proxy.js';
+import { isCorsPreflightRequest, setCorsHeaders } from './cors.js';
 import {
     createPaymentUrl,
     getPaymentTypes,
@@ -28,6 +29,11 @@ const frontendDir = path.resolve('dist/frontend');
 const sessionCookieName = 'session';
 
 app.disable('x-powered-by');
+app.use((request, response, next) => {
+    setCorsHeaders(request, response);
+    if (isCorsPreflightRequest(request)) return response.status(204).end();
+    return next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
