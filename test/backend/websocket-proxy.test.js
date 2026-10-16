@@ -429,7 +429,7 @@ test('proxies HTTP requests with pool cookies and the same filtered headers', as
             method: 'OPTIONS',
             headers: {
                 Origin: 'https://client.example',
-                'Access-Control-Request-Headers': 'authorization, content-type',
+                'Access-Control-Request-Headers': 'authorization, content-type, cookie',
                 'Access-Control-Request-Method': 'POST',
             },
         });
@@ -437,7 +437,10 @@ test('proxies HTTP requests with pool cookies and the same filtered headers', as
         assert.equal(preflightResponse.headers.get('access-control-allow-origin'), 'https://client.example');
         assert.equal(preflightResponse.headers.get('access-control-allow-credentials'), 'true');
         assert.equal(preflightResponse.headers.get('access-control-allow-methods').includes('POST'), true);
-        assert.equal(preflightResponse.headers.get('access-control-allow-headers'), 'authorization, content-type');
+        assert.deepEqual(
+            preflightResponse.headers.get('access-control-allow-headers').toLowerCase().split(', ').sort(),
+            ['authorization', 'content-type', 'cookie'],
+        );
         assert.equal(tokenValidationCalls, 0);
 
         const response = await fetch(`http://127.0.0.1:${server.address().port}/api/data?query=1`, {

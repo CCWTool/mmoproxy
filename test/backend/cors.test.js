@@ -23,9 +23,22 @@ test('allows requested headers and methods on preflight responses', () => {
         method: 'OPTIONS',
     };
     const headers = createCorsHeaders(request, { vary: 'Accept-Encoding' });
+    const allowedHeaders = headers['access-control-allow-headers']
+        .toLowerCase()
+        .split(', ')
+        .sort();
 
     assert.equal(isCorsPreflightRequest(request), true);
-    assert.equal(headers['access-control-allow-headers'], 'authorization, content-type');
+    assert.deepEqual(allowedHeaders, ['authorization', 'content-type', 'cookie']);
     assert.equal(headers['access-control-allow-methods'].includes('POST'), true);
     assert.equal(headers.vary, 'Accept-Encoding, Origin');
+});
+
+test('explicitly allows Authorization and Cookie when no headers are requested', () => {
+    const headers = createCorsHeaders({
+        headers: { 'access-control-request-method': 'GET' },
+        method: 'OPTIONS',
+    });
+
+    assert.equal(headers['access-control-allow-headers'], 'Authorization, Cookie');
 });

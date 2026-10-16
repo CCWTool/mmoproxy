@@ -1,4 +1,5 @@
 const allowedMethods = 'GET, HEAD, PUT, PATCH, POST, DELETE, OPTIONS';
+const credentialHeaders = ['Authorization', 'Cookie'];
 
 function appendVaryOrigin(value) {
     const values = Array.isArray(value) ? value.join(', ') : value;
@@ -20,7 +21,15 @@ function createCorsHeaders(request, existingHeaders = {}) {
         headers['access-control-allow-methods'] = allowedMethods;
         headers['access-control-max-age'] = '600';
         const requestedHeaders = request.headers['access-control-request-headers'];
-        if (requestedHeaders) headers['access-control-allow-headers'] = requestedHeaders;
+        const allowedHeaders = new Map();
+        for (const header of requestedHeaders?.split(',') ?? []) {
+            const name = header.trim();
+            if (name) allowedHeaders.set(name.toLowerCase(), name);
+        }
+        for (const header of credentialHeaders) {
+            allowedHeaders.set(header.toLowerCase(), header);
+        }
+        headers['access-control-allow-headers'] = [...allowedHeaders.values()].join(', ');
     }
 
     return headers;
