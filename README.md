@@ -94,7 +94,7 @@ DB_TYPE=mysql DB_HOST=localhost DB_PORT=3306 DB_USER=user DB_PASSWORD=password D
 
 ## HTTP 和 WebSocket 代理
 
-后端另外监听 HTTP 和 WebSocket 代理端口，默认地址为 `http://0.0.0.0:9989` / `ws://0.0.0.0:9989`，通过 `WS_PROXY_HOST` 和 `WS_PROXY_PORT` 配置监听地址。WebSocket 上游默认为 `wss://ws.example.com`，可通过 `WS_UPSTREAM_URL` 配置；HTTP 上游默认为 WebSocket 上游的 HTTPS 地址，也可通过 `HTTP_UPSTREAM_URL` 单独配置。客户端请求的路径、查询参数、方法、请求体和响应会转发到上游。
+后端另外监听 HTTP 和 WebSocket 代理端口，默认地址为 `http://0.0.0.0:9989` / `ws://0.0.0.0:9989`，通过 `WS_PROXY_HOST` 和 `WS_PROXY_PORT` 配置监听地址。必须在 `.env` 中设置 `WS_UPSTREAM_URL` 指定 WebSocket 上游；HTTP 上游默认为该 WebSocket 上游的 HTTPS 地址，也可通过 `HTTP_UPSTREAM_URL` 单独配置。客户端请求的路径、查询参数、方法、请求体和响应会转发到上游。
 
 HTTP 和 WebSocket 流量均由 `http-proxy` 库负责转发。
 

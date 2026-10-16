@@ -356,6 +356,24 @@ test('requires WS_PROXY_HEADERS to be a JSON object of string values', () => {
     assert.throws(() => readProxyHeaders('{"x-count":1}'), /string values/);
 });
 
+test('requires a WebSocket upstream URL', () => {
+    const originalUpstreamUrl = process.env.WS_UPSTREAM_URL;
+    delete process.env.WS_UPSTREAM_URL;
+
+    try {
+        assert.throws(
+            () => attachProxy(createServer(), {}),
+            /WS_UPSTREAM_URL is required/,
+        );
+    } finally {
+        if (originalUpstreamUrl === undefined) {
+            delete process.env.WS_UPSTREAM_URL;
+        } else {
+            process.env.WS_UPSTREAM_URL = originalUpstreamUrl;
+        }
+    }
+});
+
 test('proxies HTTP requests with pool cookies and the same filtered headers', async () => {
     let upstreamRequest;
     const upstreamServer = createServer((request, response) => {

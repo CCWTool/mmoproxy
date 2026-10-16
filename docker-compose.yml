@@ -24,6 +24,7 @@ services:
       REDIS_URL: redis://redis:6379
       WS_PROXY_HOST: 0.0.0.0
       WS_PROXY_PORT: 9989
+      WS_UPSTREAM_URL: ${WS_UPSTREAM_URL:?Set WS_UPSTREAM_URL in .env}
     ports:
       - "3000:3000"
       - "9989:9989"

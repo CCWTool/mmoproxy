@@ -126,11 +126,14 @@ function writeHttpResponse(response, status, message) {
 function attachProxy(server, database, {
     host = process.env.WS_PROXY_HOST || '0.0.0.0',
     port = Number(process.env.WS_PROXY_PORT || 9989),
-    upstreamUrl = process.env.WS_UPSTREAM_URL || 'wss://ws.example.com',
+    upstreamUrl = process.env.WS_UPSTREAM_URL,
     httpUpstreamUrl = process.env.HTTP_UPSTREAM_URL
-        || (upstreamUrl.startsWith('wss:') ? upstreamUrl.replace(/^wss:/, 'https:') : ''),
+        || (upstreamUrl?.startsWith('wss:') ? upstreamUrl.replace(/^wss:/, 'https:') : ''),
     configuredHeaders = readProxyHeaders(process.env.WS_PROXY_HEADERS),
 } = {}) {
+    if (!upstreamUrl) {
+        throw new Error('WS_UPSTREAM_URL is required');
+    }
     const target = new URL(upstreamUrl);
     if (target.protocol !== 'wss:') {
         throw new Error('WS_UPSTREAM_URL must use the wss:// protocol');
