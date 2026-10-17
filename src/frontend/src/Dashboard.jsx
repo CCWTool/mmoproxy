@@ -174,6 +174,7 @@ export default function Dashboard({ user, onLogout }) {
   const [newPoolCredentialType, setNewPoolCredentialType] = useState('password');
   const [passwordEdits, setPasswordEdits] = useState({});
   const [plans, setPlans] = useState(null);
+  const [planType, setPlanType] = useState('subscription');
   const [billingRates, setBillingRates] = useState({ httpsPrice: '0.10', wssPrice: '0.10' });
   const [planForm, setPlanForm] = useState(emptyPlan);
   const [editingPlanId, setEditingPlanId] = useState(null);
@@ -597,6 +598,9 @@ export default function Dashboard({ user, onLogout }) {
   }
 
   const formatMoney = (fen) => `¥${(Number(fen || 0) / 100).toFixed(2)}`;
+  const visiblePlans = plans
+    ?.filter((plan) => plan.type === planType)
+    .sort((first, second) => Number(first.priceFen) - Number(second.priceFen));
 
   return (
     <div className="dashboard">
@@ -675,33 +679,58 @@ export default function Dashboard({ user, onLogout }) {
                   <div><span>到期时间</span><strong>{profile?.planExpiresAt ? new Date(profile.planExpiresAt).toLocaleString() : '无'}</strong></div>
                 </div>
               )}
-              {(canReadPlan || canManagePlans) && <div className="plan-grid">
-                {plans?.map((plan) => (
-                  <article className={`content-card plan-card${hasActivePlan(profile, plan.id) ? ' selected' : ''}`} key={plan.id}>
-                    <div className="plan-card-heading">
-                      <div><span className="plan-indicator" /><div><h2>{plan.name}</h2><p>{plan.type === 'subscription' ? `订阅 · ${plan.durationSeconds / 86400} 天` : '资源包 · 长期有效'}</p></div></div>
-                      <span className="plan-price">{formatMoney(plan.priceFen)}</span>
-                    </div>
-                    <p className="plan-description">
-                      HTTPS {plan.httpsQuota === -1 ? '不限' : `${plan.httpsQuota} 次`} · WSS {plan.wssDurationSeconds === -1 ? '不限时长' : `${plan.wssDurationSeconds / 60} 分钟`}
-                    </p>
-                    {plan.type === 'subscription' && (
-                      <p className="plan-description">套餐外：HTTPS {formatMoney(plan.httpsOverageFen)} / 次 · WSS {formatMoney(plan.wssOverageFen)} / 分钟</p>
-                    )}
-                    {canReadPlan && (hasActivePlan(profile, plan.id)
-                      ? <span className="plan-default-tag">当前套餐</span>
-                      : <button className="primary-button plan-buy-button" type="button" onClick={() => purchasePlan(plan)} disabled={busy}>购买</button>)}
-                    {canManagePlans && (
-                      <div className="row-actions plan-admin-actions">
-                        <button className="text-button" type="button" onClick={() => editPlan(plan)}>编辑</button>
-                        <button className="text-button remove-button" type="button" onClick={() => deletePlan(plan)} disabled={busy}>移除</button>
-                      </div>
-                    )}
-                  </article>
-                ))}
-                {plans === null && <p className="loading-note">正在读取套餐…</p>}
-                {plans && !plans.length && <p className="loading-note">暂无可用套餐。</p>}
-              </div>}
+              {(canReadPlan || canManagePlans) && (
+                <>
+                  <div className="plan-tabs" role="tablist" aria-label="套餐类型">
+                    <button
+                      className={`plan-tab${planType === 'subscription' ? ' active' : ''}`}
+                      id="subscription-plans-tab"
+                      type="button"
+                      role="tab"
+                      aria-selected={planType === 'subscription'}
+                      aria-controls="plan-list"
+                      onClick={() => setPlanType('subscription')}
+                    >订阅套餐</button>
+                    <button
+                      className={`plan-tab${planType === 'resource' ? ' active' : ''}`}
+                      id="resource-plans-tab"
+                      type="button"
+                      role="tab"
+                      aria-selected={planType === 'resource'}
+                      aria-controls="plan-list"
+                      onClick={() => setPlanType('resource')}
+                    >资源包套餐</button>
+                  </div>
+                  <div className="plan-grid" id="plan-list" role="tabpanel" aria-labelledby={`${planType}-plans-tab`}>
+                    {visiblePlans?.map((plan) => (
+                      <article className={`content-card plan-card${hasActivePlan(profile, plan.id) ? ' selected' : ''}`} key={plan.id}>
+                        <div className="plan-card-heading">
+                          <div><span className="plan-indicator" /><div><h2>{plan.name}</h2><p>{plan.type === 'subscription' ? `订阅 · ${plan.durationSeconds / 86400} 天` : '资源包 · 长期有效'}</p></div></div>
+                          <span className="plan-price">{formatMoney(plan.priceFen)}</span>
+                        </div>
+                        <p className="plan-description">
+                          HTTPS {plan.httpsQuota === -1 ? '不限' : `${plan.httpsQuota} 次`} · WSS {plan.wssDurationSeconds === -1 ? '不限时长' : `${plan.wssDurationSeconds / 60} 分钟`}
+                        </p>
+                        {plan.type === 'subscription' && (
+                          <p className="plan-description">套餐外：HTTPS {formatMoney(plan.httpsOverageFen)} / 次 · WSS {formatMoney(plan.wssOverageFen)} / 分钟</p>
+                        )}
+                        {canReadPlan && (hasActivePlan(profile, plan.id)
+                          ? <span className="plan-default-tag">当前套餐</span>
+                          : <button className="primary-button plan-buy-button" type="button" onClick={() => purchasePlan(plan)} disabled={busy}>购买</button>)}
+                        {canManagePlans && (
+                          <div className="row-actions plan-admin-actions">
+                            <button className="text-button" type="button" onClick={() => editPlan(plan)}>编辑</button>
+                            <button className="text-button remove-button" type="button" onClick={() => deletePlan(plan)} disabled={busy}>移除</button>
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                    {plans === null && <p className="loading-note">正在读取套餐…</p>}
+                    {plans && !plans.length && <p className="loading-note">暂无可用套餐。</p>}
+                    {plans?.length > 0 && visiblePlans?.length === 0 && <p className="loading-note">暂无{planType === 'subscription' ? '订阅套餐' : '资源包套餐'}。</p>}
+                  </div>
+                </>
+              )}
               {canManagePlans && (
                 <>
                   <form className="content-card create-form" onSubmit={saveBillingRates}>
