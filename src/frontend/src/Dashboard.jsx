@@ -126,6 +126,7 @@ const emptyPlan = {
   durationDays: '30',
   httpsQuota: '-1',
   wssDurationMinutes: '-1',
+  purchaseLimit: '-1',
   httpsOverage: '0.10',
   wssOverage: '0.10',
 };
@@ -392,6 +393,7 @@ export default function Dashboard({ user, onLogout }) {
       durationDays: plan.type === 'subscription' ? String(plan.durationSeconds / 86400) : '30',
       httpsQuota: String(plan.httpsQuota),
       wssDurationMinutes: String(plan.wssDurationSeconds === -1 ? -1 : plan.wssDurationSeconds / 60),
+      purchaseLimit: String(plan.purchaseLimit),
       httpsOverage: (plan.httpsOverageFen / 100).toFixed(2),
       wssOverage: (plan.wssOverageFen / 100).toFixed(2),
     });
@@ -404,6 +406,7 @@ export default function Dashboard({ user, onLogout }) {
       durationDays: Number(planForm.durationDays),
       httpsQuota: Number(planForm.httpsQuota),
       wssDurationMinutes: Number(planForm.wssDurationMinutes),
+      purchaseLimit: Number(planForm.purchaseLimit),
     };
     await runAction(async () => {
       await api(editingPlanId ? `/api/admin/plans/${editingPlanId}` : '/api/admin/plans', {
@@ -600,7 +603,14 @@ export default function Dashboard({ user, onLogout }) {
   const formatMoney = (fen) => `¥${(Number(fen || 0) / 100).toFixed(2)}`;
   const visiblePlans = plans
     ?.filter((plan) => plan.type === planType)
-    .sort((first, second) => Number(first.priceFen) - Number(second.priceFen));
+    .sort((first, second) => {
+      if (planType === 'subscription') {
+        const firstLimit = first.purchaseLimit === -1 ? Number.POSITIVE_INFINITY : first.purchaseLimit;
+        const secondLimit = second.purchaseLimit === -1 ? Number.POSITIVE_INFINITY : second.purchaseLimit;
+        return firstLimit - secondLimit || Number(first.priceFen) - Number(second.priceFen);
+      }
+      return Number(first.priceFen) - Number(second.priceFen);
+    });
 
   return (
     <div className="dashboard">
@@ -712,7 +722,10 @@ export default function Dashboard({ user, onLogout }) {
                           HTTPS {plan.httpsQuota === -1 ? '不限' : `${plan.httpsQuota} 次`} · WSS {plan.wssDurationSeconds === -1 ? '不限时长' : `${plan.wssDurationSeconds / 60} 分钟`}
                         </p>
                         {plan.type === 'subscription' && (
-                          <p className="plan-description">套餐外：HTTPS {formatMoney(plan.httpsOverageFen)} / 次 · WSS {formatMoney(plan.wssOverageFen)} / 分钟</p>
+                          <>
+                            <p className="plan-description">每人限购：{plan.purchaseLimit === -1 ? '不限' : `${plan.purchaseLimit} 次`}</p>
+                            <p className="plan-description">套餐外：HTTPS {formatMoney(plan.httpsOverageFen)} / 次 · WSS {formatMoney(plan.wssOverageFen)} / 分钟</p>
+                          </>
                         )}
                         {canReadPlan && (hasActivePlan(profile, plan.id)
                           ? <span className="plan-default-tag">当前套餐</span>
@@ -742,12 +755,13 @@ export default function Dashboard({ user, onLogout }) {
                     <button className="primary-button" type="submit" disabled={busy}>保存默认价格</button>
                   </form>
                   <form className="content-card create-form plan-editor" onSubmit={savePlan}>
-                    <div className="card-heading"><div><h2>{editingPlanId ? '编辑套餐' : '添加套餐'}</h2><p>HTTPS 次数和 WSS 时长 -1 表示不限制；订阅时间按天填写，WSS 时长按分钟填写。</p></div></div>
+                    <div className="card-heading"><div><h2>{editingPlanId ? '编辑套餐' : '添加套餐'}</h2><p>HTTPS 次数、WSS 时长和每人限购次数 -1 表示不限制；订阅时间按天填写，WSS 时长按分钟填写。</p></div></div>
                     <div className="form-grid">
                       <label>套餐名称<input value={planForm.name} onChange={(event) => setPlanForm((current) => ({ ...current, name: event.target.value }))} maxLength={64} required /></label>
                       <label>类型<select value={planForm.type} onChange={(event) => setPlanForm((current) => ({ ...current, type: event.target.value }))}><option value="subscription">订阅</option><option value="resource">资源包</option></select></label>
                       <label>价格（元）<input type="number" min="0" step="0.01" value={planForm.price} onChange={(event) => setPlanForm((current) => ({ ...current, price: event.target.value }))} required /></label>
                       {planForm.type === 'subscription' && <label>持续时间（天）<input type="number" min="1" max="36500" step="1" value={planForm.durationDays} onChange={(event) => setPlanForm((current) => ({ ...current, durationDays: event.target.value }))} required /></label>}
+                      {planForm.type === 'subscription' && <label>每人限购次数（-1 不限）<input type="number" min="-1" step="1" value={planForm.purchaseLimit} onChange={(event) => setPlanForm((current) => ({ ...current, purchaseLimit: event.target.value }))} required /></label>}
                       <label>HTTPS 代理次数<input type="number" min="-1" step="1" value={planForm.httpsQuota} onChange={(event) => setPlanForm((current) => ({ ...current, httpsQuota: event.target.value }))} required /></label>
                       <label>WSS 时长（分钟）<input type="number" min="-1" step="1" value={planForm.wssDurationMinutes} onChange={(event) => setPlanForm((current) => ({ ...current, wssDurationMinutes: event.target.value }))} required /></label>
                       {planForm.type === 'subscription' && <>

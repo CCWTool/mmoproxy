@@ -179,7 +179,15 @@ class UserDatabase {
                     wss_connection_quota INTEGER NOT NULL DEFAULT -1,
                     wss_duration_seconds INTEGER NOT NULL DEFAULT -1,
                     https_overage_fen INTEGER NOT NULL DEFAULT 0,
-                    wss_overage_fen INTEGER NOT NULL DEFAULT 0
+                    wss_overage_fen INTEGER NOT NULL DEFAULT 0,
+                    purchase_limit INTEGER NOT NULL DEFAULT -1
+                );
+
+                CREATE TABLE IF NOT EXISTS plan_purchase_counts (
+                    user_id INTEGER NOT NULL,
+                    plan_id INTEGER NOT NULL,
+                    purchase_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, plan_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS bearer_tokens (
@@ -224,6 +232,10 @@ class UserDatabase {
                     FOREIGN KEY (redeemed_by) REFERENCES users(id) ON DELETE SET NULL
                 )
             `);
+            const planColumns = this.db.pragma('table_info(plans)');
+            if (!planColumns.some((column) => column.name === 'purchase_limit')) {
+                this.db.exec('ALTER TABLE plans ADD COLUMN purchase_limit INTEGER NOT NULL DEFAULT -1');
+            }
             this.ensureBillingSettings();
             const apiKeyColumns = this.db.pragma('table_info(user_api_keys)');
             if (!apiKeyColumns.some((column) => column.name === 'name')) {
@@ -320,7 +332,20 @@ class UserDatabase {
                 wss_connection_quota BIGINT NOT NULL DEFAULT -1,
                 wss_duration_seconds BIGINT NOT NULL DEFAULT -1,
                 https_overage_fen BIGINT NOT NULL DEFAULT 0,
-                wss_overage_fen BIGINT NOT NULL DEFAULT 0
+                wss_overage_fen BIGINT NOT NULL DEFAULT 0,
+                purchase_limit BIGINT NOT NULL DEFAULT -1
+            )
+        `);
+        const [planColumns] = await this.db.query('SHOW COLUMNS FROM plans');
+        if (!planColumns.some((column) => column.Field === 'purchase_limit')) {
+            await this.db.query('ALTER TABLE plans ADD COLUMN purchase_limit BIGINT NOT NULL DEFAULT -1');
+        }
+        await this.db.query(`
+            CREATE TABLE IF NOT EXISTS plan_purchase_counts (
+                user_id INT UNSIGNED NOT NULL,
+                plan_id INT UNSIGNED NOT NULL,
+                purchase_count BIGINT NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, plan_id)
             )
         `);
         await this.ensureBillingSettings();
@@ -777,7 +802,8 @@ class UserDatabase {
                 duration_seconds AS durationSeconds, https_quota AS httpsQuota,
                 wss_connection_quota AS wssConnectionQuota,
                 wss_duration_seconds AS wssDurationSeconds,
-                https_overage_fen AS httpsOverageFen, wss_overage_fen AS wssOverageFen
+                https_overage_fen AS httpsOverageFen, wss_overage_fen AS wssOverageFen,
+                purchase_limit AS purchaseLimit
             FROM plans ORDER BY id
         `;
         const rows = this.config.type === 'sqlite'
@@ -793,6 +819,7 @@ class UserDatabase {
             wssDurationSeconds: Number(plan.wssDurationSeconds),
             httpsOverageFen: Number(plan.httpsOverageFen),
             wssOverageFen: Number(plan.wssOverageFen),
+            purchaseLimit: Number(plan.purchaseLimit),
         }));
     }
 
@@ -808,6 +835,7 @@ class UserDatabase {
             plan.wssDurationSeconds,
             plan.httpsOverageFen,
             plan.wssOverageFen,
+            plan.purchaseLimit ?? -1,
         ];
         if (this.config.type === 'sqlite') {
             if (plan.id === null) {
@@ -815,15 +843,15 @@ class UserDatabase {
                     INSERT INTO plans (
                         name, type, price_fen, duration_seconds, https_quota,
                         wss_connection_quota, wss_duration_seconds,
-                        https_overage_fen, wss_overage_fen
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        https_overage_fen, wss_overage_fen, purchase_limit
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `).run(...values);
                 return Number(result.lastInsertRowid);
             }
             const result = this.db.prepare(`
                 UPDATE plans SET name = ?, type = ?, price_fen = ?, duration_seconds = ?,
                     https_quota = ?, wss_connection_quota = ?, wss_duration_seconds = ?,
-                    https_overage_fen = ?, wss_overage_fen = ? WHERE id = ?
+                    https_overage_fen = ?, wss_overage_fen = ?, purchase_limit = ? WHERE id = ?
             `).run(...values, plan.id);
             if (result.changes === 1 || this.db.prepare('SELECT id FROM plans WHERE id = ?').get(plan.id)) {
                 return plan.id;
@@ -835,15 +863,15 @@ class UserDatabase {
                 INSERT INTO plans (
                     name, type, price_fen, duration_seconds, https_quota,
                     wss_connection_quota, wss_duration_seconds,
-                    https_overage_fen, wss_overage_fen
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    https_overage_fen, wss_overage_fen, purchase_limit
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, values);
             return Number(result.insertId);
         }
         const [result] = await this.db.execute(`
             UPDATE plans SET name = ?, type = ?, price_fen = ?, duration_seconds = ?,
                 https_quota = ?, wss_connection_quota = ?, wss_duration_seconds = ?,
-                https_overage_fen = ?, wss_overage_fen = ? WHERE id = ?
+                https_overage_fen = ?, wss_overage_fen = ?, purchase_limit = ? WHERE id = ?
         `, [...values, plan.id]);
         if (result.affectedRows === 1) return plan.id;
         const [rows] = await this.db.execute('SELECT id FROM plans WHERE id = ?', [plan.id]);
@@ -929,8 +957,21 @@ class UserDatabase {
             const purchase = this.db.transaction(() => {
                 const plan = this.db.prepare('SELECT * FROM plans WHERE id = ?').get(planId);
                 const user = this.db.prepare('SELECT balance_fen, permissions FROM users WHERE id = ?').get(userId);
-                if (!plan || !user || !hasPermission(user, 'user.login')) return false;
-                if (Number(user.balance_fen) < Number(plan.price_fen)) return false;
+                if (!plan || !user || !hasPermission(user, 'user.login')) {
+                    return { success: false, reason: 'unavailable' };
+                }
+                if (plan.type === 'subscription' && Number(plan.purchase_limit) !== -1) {
+                    const previousPurchases = this.db.prepare(`
+                        SELECT purchase_count FROM plan_purchase_counts
+                        WHERE user_id = ? AND plan_id = ?
+                    `).get(userId, planId)?.purchase_count ?? 0;
+                    if (Number(previousPurchases) >= Number(plan.purchase_limit)) {
+                        return { success: false, reason: 'purchase_limit' };
+                    }
+                }
+                if (Number(user.balance_fen) < Number(plan.price_fen)) {
+                    return { success: false, reason: 'unavailable' };
+                }
                 const now = Date.now();
                 const expiresAt = plan.type === 'subscription' ? now + Number(plan.duration_seconds) * 1000 : null;
                 const result = this.db.prepare(`
@@ -939,7 +980,16 @@ class UserDatabase {
                         plan_wss_connections_used = 0, plan_wss_seconds_used = 0
                     WHERE id = ? AND balance_fen >= ?
                 `).run(plan.price_fen, planId, now, expiresAt, userId, plan.price_fen);
-                return result.changes === 1;
+                if (result.changes !== 1) return { success: false, reason: 'unavailable' };
+                if (plan.type === 'subscription') {
+                    this.db.prepare(`
+                        INSERT INTO plan_purchase_counts (user_id, plan_id, purchase_count)
+                        VALUES (?, ?, 1)
+                        ON CONFLICT(user_id, plan_id)
+                        DO UPDATE SET purchase_count = purchase_count + 1
+                    `).run(userId, planId);
+                }
+                return { success: true };
             });
             return purchase();
         }
@@ -953,10 +1003,23 @@ class UserDatabase {
             );
             const plan = plans[0];
             const user = users[0];
-            if (!plan || !user || !hasPermission(user, 'user.login')
-                || Number(user.balance_fen) < Number(plan.price_fen)) {
+            if (!plan || !user || !hasPermission(user, 'user.login')) {
                 await connection.rollback();
-                return false;
+                return { success: false, reason: 'unavailable' };
+            }
+            if (plan.type === 'subscription' && Number(plan.purchase_limit) !== -1) {
+                const [counts] = await connection.execute(`
+                    SELECT purchase_count FROM plan_purchase_counts
+                    WHERE user_id = ? AND plan_id = ? FOR UPDATE
+                `, [userId, planId]);
+                if (Number(counts[0]?.purchase_count ?? 0) >= Number(plan.purchase_limit)) {
+                    await connection.rollback();
+                    return { success: false, reason: 'purchase_limit' };
+                }
+            }
+            if (Number(user.balance_fen) < Number(plan.price_fen)) {
+                await connection.rollback();
+                return { success: false, reason: 'unavailable' };
             }
             const now = Date.now();
             const expiresAt = plan.type === 'subscription' ? now + Number(plan.duration_seconds) * 1000 : null;
@@ -968,10 +1031,17 @@ class UserDatabase {
             `, [plan.price_fen, planId, now, expiresAt, userId, plan.price_fen]);
             if (updated.affectedRows !== 1) {
                 await connection.rollback();
-                return false;
+                return { success: false, reason: 'unavailable' };
+            }
+            if (plan.type === 'subscription') {
+                await connection.execute(`
+                    INSERT INTO plan_purchase_counts (user_id, plan_id, purchase_count)
+                    VALUES (?, ?, 1)
+                    ON DUPLICATE KEY UPDATE purchase_count = purchase_count + 1
+                `, [userId, planId]);
             }
             await connection.commit();
-            return true;
+            return { success: true };
         } catch (error) {
             await connection.rollback();
             throw error;

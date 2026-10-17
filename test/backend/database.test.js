@@ -47,6 +47,19 @@ legacyFixture.exec(`
         ('legacy-user', 'legacy-password', '["user.login"]', 0),
         ('legacy-admin', 'legacy-admin-password', '["user.login","admin.users.read","admin.users.edit"]', 0),
         ('legacy-banned', 'legacy-banned-password', '["user.login","user.plan.read"]', 1);
+    CREATE TABLE plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        price_fen INTEGER NOT NULL,
+        duration_seconds INTEGER NOT NULL DEFAULT 0,
+        https_quota INTEGER NOT NULL DEFAULT -1,
+        wss_connection_quota INTEGER NOT NULL DEFAULT -1,
+        wss_duration_seconds INTEGER NOT NULL DEFAULT -1,
+        https_overage_fen INTEGER NOT NULL DEFAULT 0,
+        wss_overage_fen INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO plans (name, type, price_fen) VALUES ('Legacy subscription', 'subscription', 100);
 `);
 legacyFixture.close();
 process.env.SQLITE_PATH = legacyPath;
@@ -73,6 +86,10 @@ assert.deepEqual((await migratedDb.getUserById(legacyBanned.id)).permissions, ['
 assert.equal((await migratedDb.getUserById(legacyBanned.id)).isBanned, true);
 assert.equal(await migratedDb.login('legacy-banned', 'legacy-banned-password'), null);
 assert.equal(migratedDb.db.prepare('SELECT is_banned FROM users WHERE id = ?').get(legacyBanned.id).is_banned, 0);
+assert.equal(
+    migratedDb.db.prepare('SELECT purchase_limit FROM plans').get().purchase_limit,
+    -1,
+);
 process.env.SQLITE_PATH = path.join(directory, 'test.db');
 
 after(() => {
@@ -159,7 +176,7 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
         httpsOverageFen: 25,
         wssOverageFen: 20,
     });
-    assert.equal(await db.purchasePlan(user.id, planId), true);
+    assert.deepEqual(await db.purchasePlan(user.id, planId), { success: true });
     assert.equal((await db.getUserById(user.id)).balanceFen, 800);
     assert.equal((await db.getUserById(user.id)).planExpiresAt - Date.now() > 86_000_000, true);
 
@@ -199,7 +216,7 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
         wssOverageFen: 0,
     });
     await db.updateAdminUser(user.id, { balanceFen: 1000 });
-    assert.equal(await db.purchasePlan(user.id, resourcePlanId), true);
+    assert.deepEqual(await db.purchasePlan(user.id, resourcePlanId), { success: true });
     assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'balance', amountFen: 14 });
     const resourceUsage = await db.beginWssUsage(user.id);
     assert.equal(resourceUsage.planId, resourcePlanId);
@@ -207,13 +224,44 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
     assert.equal(await db.settleWssUsage(user.id, resourceUsage, 1), true);
     assert.equal((await db.getUserById(user.id)).balanceFen, 886);
 
+    const limitedPlanId = await db.savePlan({
+        id: null,
+        name: 'Limited subscription',
+        type: 'subscription',
+        priceFen: 100,
+        durationSeconds: 86400,
+        httpsQuota: -1,
+        wssConnectionQuota: -1,
+        wssDurationSeconds: -1,
+        httpsOverageFen: 0,
+        wssOverageFen: 0,
+        purchaseLimit: 1,
+    });
+    assert.equal((await db.listPlans()).find((plan) => plan.id === limitedPlanId).purchaseLimit, 1);
+    assert.deepEqual(await db.purchasePlan(user.id, limitedPlanId), { success: true });
+    assert.deepEqual(await db.purchasePlan(user.id, limitedPlanId), {
+        success: false,
+        reason: 'purchase_limit',
+    });
+    assert.deepEqual(await db.purchasePlan(user.id, resourcePlanId), { success: true });
+    assert.deepEqual(await db.purchasePlan(user.id, limitedPlanId), {
+        success: false,
+        reason: 'purchase_limit',
+    });
+    assert.equal(db.db.prepare(`
+        SELECT purchase_count FROM plan_purchase_counts WHERE user_id = ? AND plan_id = ?
+    `).get(user.id, limitedPlanId).purchase_count, 1);
+
     await db.updateAdminUser(user.id, { isBanned: true });
     assert.equal((await db.getUserById(user.id)).isBanned, true);
     assert.equal((await db.getUserById(user.id)).permissions.includes('user.login'), false);
     assert.equal(await db.login('proxy-user', 'password'), null);
     assert.equal(await db.beginWssUsage(user.id), null);
     assert.equal(await db.chargeHttpsRequest(user.id), null);
-    assert.equal(await db.purchasePlan(user.id, resourcePlanId), false);
+    assert.deepEqual(await db.purchasePlan(user.id, resourcePlanId), {
+        success: false,
+        reason: 'unavailable',
+    });
     db.db.prepare('INSERT INTO bearer_tokens (`key`, id) VALUES (?, ?)').run('banned-user-token', user.id);
     assert.equal(await db.validateBearerToken('banned-user-token'), null);
     await db.updateAdminUser(user.id, { permissions: ['user.plan.read'] });

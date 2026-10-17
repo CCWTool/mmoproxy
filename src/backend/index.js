@@ -179,8 +179,13 @@ app.post('/api/user/plans/:id/purchase', async (request, response) => {
         if (!Number.isSafeInteger(planId) || planId < 1) {
             return response.status(400).json({ message: '套餐编号无效。' });
         }
-        const purchased = await db.purchasePlan(user.id, planId);
-        if (!purchased) return response.status(400).json({ message: '套餐不存在、余额不足或账户已封禁。' });
+        const purchase = await db.purchasePlan(user.id, planId);
+        if (!purchase.success) {
+            const message = purchase.reason === 'purchase_limit'
+                ? '已达到该订阅套餐的限购次数。'
+                : '套餐不存在、余额不足或账户已封禁。';
+            return response.status(400).json({ message });
+        }
         return response.json({ success: true });
     } catch (error) {
         console.error('Error purchasing plan:', error);
@@ -474,17 +479,21 @@ function parsePlanInput(body) {
         durationDays,
         httpsQuota,
         wssDurationMinutes,
+        purchaseLimit,
         httpsOverage,
         wssOverage,
     } = body ?? {};
     const priceFen = yuanToFen(price);
     const httpsOverageFen = type === 'subscription' ? yuanToFen(httpsOverage) : 0;
     const wssOverageFen = type === 'subscription' ? yuanToFen(wssOverage) : 0;
+    const parsedPurchaseLimit = type === 'subscription' ? (purchaseLimit ?? -1) : -1;
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 64
         || !['subscription', 'resource'].includes(type)
         || priceFen === null || !validateQuota(httpsQuota)
         || !validateQuota(wssDurationMinutes)
         || (wssDurationMinutes !== -1 && wssDurationMinutes > Math.floor(Number.MAX_SAFE_INTEGER / 60))
+        || (type === 'subscription'
+            && (!Number.isSafeInteger(parsedPurchaseLimit) || parsedPurchaseLimit < -1))
         || (type === 'subscription'
             && (!Number.isSafeInteger(durationDays) || durationDays < 1 || durationDays > 36500))
         || (type === 'subscription' && (httpsOverageFen === null || wssOverageFen === null))) {
@@ -498,6 +507,7 @@ function parsePlanInput(body) {
         httpsQuota,
         wssConnectionQuota: -1,
         wssDurationSeconds: wssDurationMinutes === -1 ? -1 : wssDurationMinutes * 60,
+        purchaseLimit: parsedPurchaseLimit,
         httpsOverageFen,
         wssOverageFen,
     };
