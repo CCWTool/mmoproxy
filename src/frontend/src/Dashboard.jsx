@@ -920,7 +920,7 @@ export default function Dashboard({ user, onLogout }) {
                     setUserDraft(null);
                   }
                 }}>
-                  <form className="user-edit-modal" role="dialog" aria-modal="true" aria-labelledby="user-edit-title" onSubmit={saveUserChanges}>
+                  <form className="user-edit-modal" role="dialog" aria-modal="true" aria-busy={busy} aria-labelledby="user-edit-title" onSubmit={saveUserChanges}>
                     <div className="modal-heading">
                       <div><p className="page-eyebrow">USER SETTINGS</p><h2 id="user-edit-title">修改用户</h2></div>
                       <button className="modal-close" type="button" aria-label="关闭" onClick={() => { setEditingUser(null); setUserDraft(null); }} disabled={busy}>×</button>
@@ -960,6 +960,7 @@ export default function Dashboard({ user, onLogout }) {
                       <button className="modal-cancel" type="button" onClick={() => { setEditingUser(null); setUserDraft(null); }} disabled={busy}>不保存</button>
                       <button className="modal-save" type="submit" disabled={busy}>保存</button>
                     </div>
+                    {busy && <div className="modal-saving-overlay" role="status">正在保存...</div>}
                   </form>
                 </div>
               )}

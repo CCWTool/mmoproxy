@@ -1586,6 +1586,7 @@ a {
 }
 
 .user-edit-modal {
+  position: relative;
   width: min(100%, 620px);
   max-height: min(90vh, 820px);
   overflow-y: auto;
@@ -1594,6 +1595,20 @@ a {
   border-radius: 12px;
   background: #fff;
   box-shadow: 0 24px 80px rgb(22 40 26 / 24%);
+}
+
+.modal-saving-overlay {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: rgb(255 255 255 / 72%);
+  color: #344238;
+  cursor: wait;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .modal-heading {
