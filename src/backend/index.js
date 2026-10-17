@@ -473,7 +473,6 @@ function parsePlanInput(body) {
         price,
         durationDays,
         httpsQuota,
-        wssConnectionQuota,
         wssDurationMinutes,
         httpsOverage,
         wssOverage,
@@ -484,7 +483,7 @@ function parsePlanInput(body) {
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 64
         || !['subscription', 'resource'].includes(type)
         || priceFen === null || !validateQuota(httpsQuota)
-        || !validateQuota(wssConnectionQuota) || !validateQuota(wssDurationMinutes)
+        || !validateQuota(wssDurationMinutes)
         || (wssDurationMinutes !== -1 && wssDurationMinutes > Math.floor(Number.MAX_SAFE_INTEGER / 60))
         || (type === 'subscription'
             && (!Number.isSafeInteger(durationDays) || durationDays < 1 || durationDays > 36500))
@@ -497,7 +496,7 @@ function parsePlanInput(body) {
         priceFen,
         durationSeconds: type === 'subscription' ? durationDays * 86400 : 0,
         httpsQuota,
-        wssConnectionQuota,
+        wssConnectionQuota: -1,
         wssDurationSeconds: wssDurationMinutes === -1 ? -1 : wssDurationMinutes * 60,
         httpsOverageFen,
         wssOverageFen,

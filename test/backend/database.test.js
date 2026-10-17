@@ -194,7 +194,7 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
         durationSeconds: 0,
         httpsQuota: 0,
         wssConnectionQuota: 0,
-        wssDurationSeconds: 0,
+        wssDurationSeconds: 90,
         httpsOverageFen: 0,
         wssOverageFen: 0,
     });
@@ -203,9 +203,9 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
     assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'balance', amountFen: 14 });
     const resourceUsage = await db.beginWssUsage(user.id);
     assert.equal(resourceUsage.planId, resourcePlanId);
-    assert.equal(resourceUsage.reservedFen, 18);
+    assert.equal(resourceUsage.reservedFen, 0);
     assert.equal(await db.settleWssUsage(user.id, resourceUsage, 1), true);
-    assert.equal((await db.getUserById(user.id)).balanceFen, 868);
+    assert.equal((await db.getUserById(user.id)).balanceFen, 886);
 
     await db.updateAdminUser(user.id, { isBanned: true });
     assert.equal((await db.getUserById(user.id)).isBanned, true);

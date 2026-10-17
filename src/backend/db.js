@@ -39,16 +39,12 @@ function hasPermission(user, permission) {
     return Array.isArray(permissions) && permissions.includes(permission);
 }
 
-function calculateWssCharge(plan, usedConnections, usedSeconds, durationSeconds, defaultRate) {
+function calculateWssCharge(plan, usedSeconds, durationSeconds, defaultRate) {
     const billableSeconds = Math.ceil(durationSeconds / 60) * 60;
-    const underConnectionQuota = plan && (
-        Number(plan.wss_connection_quota) === -1
-        || usedConnections < Number(plan.wss_connection_quota)
-    );
     const remainingSeconds = plan && Number(plan.wss_duration_seconds) !== -1
         ? Math.max(0, Number(plan.wss_duration_seconds) - usedSeconds)
         : billableSeconds;
-    const includedSeconds = underConnectionQuota ? Math.min(billableSeconds, remainingSeconds) : 0;
+    const includedSeconds = plan ? Math.min(billableSeconds, remainingSeconds) : 0;
     const overageSeconds = billableSeconds - includedSeconds;
     const rate = plan?.type === 'subscription' ? Number(plan.wss_overage_fen) : defaultRate;
     return {
@@ -1120,7 +1116,7 @@ class UserDatabase {
         if (user.plan_id === null || user.plan_id === undefined
             || (user.plan_expires_at !== null && Number(user.plan_expires_at) <= Date.now())) return null;
         const query = `
-            SELECT id, type, https_quota, wss_connection_quota,
+            SELECT id, type, https_quota,
                 wss_duration_seconds, https_overage_fen, wss_overage_fen
             FROM plans WHERE id = ?
         `;
@@ -1270,7 +1266,6 @@ class UserDatabase {
         const usage = {
             planId: plan ? Number(plan.id) : null,
             planType: plan?.type ?? null,
-            wssConnectionQuota: plan ? Number(plan.wss_connection_quota) : 0,
             wssDurationSeconds: plan ? Number(plan.wss_duration_seconds) : 0,
             wssOverageFen: plan ? Number(plan.wss_overage_fen) : 0,
             defaultWssPriceFen: rates.wssPriceFen,
@@ -1299,13 +1294,11 @@ class UserDatabase {
             && plan && (!user.plan_expires_at || Number(user.plan_expires_at) > Date.now());
         const currentPlan = samePlan ? {
             type: usage.planType,
-            wss_connection_quota: usage.wssConnectionQuota,
             wss_duration_seconds: usage.wssDurationSeconds,
             wss_overage_fen: usage.wssOverageFen,
         } : null;
         const requiredFen = calculateWssCharge(
             currentPlan,
-            Number(user.plan_wss_connections_used),
             Number(user.plan_wss_seconds_used),
             elapsedSeconds,
             usage.defaultWssPriceFen,
@@ -1359,18 +1352,16 @@ class UserDatabase {
                 if (!user) return false;
                 const plan = usage.planId !== null && Number(user.plan_id) === usage.planId
                     && (!user.plan_expires_at || Number(user.plan_expires_at) > Date.now())
-                    ? this.db.prepare('SELECT type, wss_connection_quota, wss_duration_seconds, wss_overage_fen FROM plans WHERE id = ?')
+                    ? this.db.prepare('SELECT type, wss_duration_seconds, wss_overage_fen FROM plans WHERE id = ?')
                         .get(usage.planId)
                     : null;
                 const billingPlan = plan ? {
                     type: usage.planType,
-                    wss_connection_quota: usage.wssConnectionQuota,
                     wss_duration_seconds: usage.wssDurationSeconds,
                     wss_overage_fen: usage.wssOverageFen,
                 } : null;
                 const chargeFen = calculateWssCharge(
                     billingPlan,
-                    Number(user.plan_wss_connections_used),
                     Number(user.plan_wss_seconds_used),
                     settledSeconds,
                     usage.defaultWssPriceFen,
@@ -1406,20 +1397,18 @@ class UserDatabase {
                 && (!user.plan_expires_at || Number(user.plan_expires_at) > Date.now());
             const [plans] = samePlan
                 ? await connection.execute(`
-                    SELECT type, wss_connection_quota, wss_duration_seconds, wss_overage_fen
+                    SELECT type, wss_duration_seconds, wss_overage_fen
                     FROM plans WHERE id = ?
                 `, [usage.planId])
                 : [[]];
             const plan = plans[0];
                 const billingPlan = plan ? {
-                    type: usage.planType,
-                    wss_connection_quota: usage.wssConnectionQuota,
-                    wss_duration_seconds: usage.wssDurationSeconds,
-                    wss_overage_fen: usage.wssOverageFen,
+                type: usage.planType,
+                wss_duration_seconds: usage.wssDurationSeconds,
+                wss_overage_fen: usage.wssOverageFen,
                 } : null;
                 const chargeFen = calculateWssCharge(
-                    billingPlan,
-                Number(user.plan_wss_connections_used),
+                billingPlan,
                 Number(user.plan_wss_seconds_used),
                 settledSeconds,
                 usage.defaultWssPriceFen,
