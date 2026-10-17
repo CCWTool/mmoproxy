@@ -388,7 +388,7 @@ class UserDatabase {
     async register(user, pass) {
         await this.ready;
         const query = 'INSERT INTO users (username, password, data, permissions) VALUES (?, ?, ?, ?)';
-        const params = [user, hashPassword(pass), JSON.stringify({}), JSON.stringify(defaultPermissions)];
+        const params = [user, hashPassword(pass), JSON.stringify({}), JSON.stringify([...defaultPermissions, 'user.key'])];
         try {
             if (this.config.type === 'sqlite') {
                 this.db.prepare(query).run(...params);

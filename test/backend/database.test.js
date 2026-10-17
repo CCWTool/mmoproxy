@@ -96,7 +96,7 @@ test('hashes new user passwords, migrates legacy passwords, and manages user per
         username: 'proxy-user',
         balanceFen: 0,
         data: {},
-        permissions: ['user.login', 'user.plan.read'],
+        permissions: ['user.login', 'user.plan.read', 'user.key'],
     });
     assert.equal(await db.updateUserPermissions(user.id, ['user.login', 'admin.pool.read']), true);
     assert.deepEqual((await db.getUserById(user.id)).permissions, ['user.login', 'admin.pool.read']);
@@ -129,6 +129,7 @@ test('creates, rotates, lists, and removes owner-scoped API keys without storing
     const otherUser = await db.createUser('other-user', 'password', ['user.login']);
     assert.equal(otherUser, true);
     const other = db.db.prepare('SELECT id FROM users WHERE username = ?').get('other-user');
+    assert.deepEqual((await db.getUserById(other.id)).permissions, ['user.login']);
 
     const created = await db.createUserApiKey(user.id, 'development laptop');
     assert.match(created.key, /^[A-Za-z0-9_-]{43}$/);
