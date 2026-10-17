@@ -3,6 +3,7 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+RUN apt-get update
 RUN apt-get install -y python3 make g++
 RUN npm ci
 
