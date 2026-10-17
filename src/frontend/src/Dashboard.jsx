@@ -98,8 +98,23 @@ const paymentTypeNames = {
   usdt: 'USDT(TRC20) 支付',
 };
 
+const sectionLabels = {
+  home: '首页',
+  plan: '套餐',
+  account: '个人中心',
+  keys: '密钥管理',
+  users: '用户管理',
+  pool: '号池管理',
+  settings: '系统设置',
+};
+
+function getSectionFromPath() {
+  const path = window.location.pathname.replace(/^\/+|\/+$/g, '');
+  return Object.hasOwn(sectionLabels, path) ? path : 'home';
+}
+
 export default function Dashboard({ user, onLogout }) {
-  const [section, setSection] = useState('home');
+  const [section, setSection] = useState(getSectionFromPath);
   const [readme, setReadme] = useState('');
   const [users, setUsers] = useState(null);
   const [accounts, setAccounts] = useState(null);
@@ -135,9 +150,41 @@ export default function Dashboard({ user, onLogout }) {
   const canManageKeys = user.permissions.includes('user.key');
   const canReadPlan = user.permissions.includes('user.plan.read');
   const canManageConfig = user.permissions.includes('admin.config.rw');
+  const navigation = [
+    { id: 'home', label: sectionLabels.home, icon: '⌂', visible: true },
+    { id: 'plan', label: sectionLabels.plan, icon: '◉', visible: canReadPlan },
+    { id: 'account', label: sectionLabels.account, icon: '♙', visible: true },
+    { id: 'keys', label: sectionLabels.keys, icon: '⚿', visible: canManageKeys },
+    { id: 'users', label: sectionLabels.users, icon: '♙', visible: canReadUsers },
+    { id: 'pool', label: sectionLabels.pool, icon: '▦', visible: canReadPool },
+    { id: 'settings', label: sectionLabels.settings, icon: '⚙', visible: canManageConfig },
+  ].filter((item) => item.visible);
+  const activeSection = navigation.some((item) => item.id === section) ? section : 'home';
 
   useEffect(() => {
-    if (section === 'account') {
+    const syncSectionFromPath = () => {
+      const nextSection = getSectionFromPath();
+      if (!navigation.some((item) => item.id === nextSection)) {
+        window.history.replaceState({ section: 'home' }, '', '/');
+        setSection('home');
+        return;
+      }
+      setSection(nextSection);
+    };
+    window.addEventListener('popstate', syncSectionFromPath);
+    return () => window.removeEventListener('popstate', syncSectionFromPath);
+  }, [canManageConfig, canManageKeys, canReadPlan, canReadPool, canReadUsers]);
+
+  useEffect(() => {
+    const path = activeSection === 'home' ? '/' : `/${activeSection}`;
+    if (window.location.pathname !== path) {
+      window.history.replaceState({ section: activeSection }, '', path);
+    }
+    document.title = `${sectionLabels[activeSection]} · mmoproxy`;
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (activeSection === 'account') {
       api('/api/user/profile')
         .then((userProfile) => {
           setProfile(userProfile);
@@ -146,32 +193,32 @@ export default function Dashboard({ user, onLogout }) {
         })
         .catch((loadError) => setError(loadError.message));
     }
-    if (section === 'settings' && canManageConfig) {
+    if (activeSection === 'settings' && canManageConfig) {
       api('/api/admin/config')
         .then(({ content }) => setConfiguration(content))
         .catch((loadError) => setError(loadError.message));
     }
-    if (section === 'home' && !readme) {
+    if (activeSection === 'home' && !readme) {
       api('/api/touser')
         .then(setReadme)
         .catch((loadError) => setError(loadError.message));
     }
-    if (section === 'users' && canReadUsers) {
+    if (activeSection === 'users' && canReadUsers) {
       api('/api/admin/users')
         .then(({ users: rows }) => setUsers(rows))
         .catch((loadError) => setError(loadError.message));
     }
-    if (section === 'pool' && canReadPool) {
+    if (activeSection === 'pool' && canReadPool) {
       api('/api/admin/pool')
         .then(({ accounts: rows }) => setAccounts(rows))
         .catch((loadError) => setError(loadError.message));
     }
-    if (section === 'keys' && canManageKeys) {
+    if (activeSection === 'keys' && canManageKeys) {
       api('/api/user/keys')
         .then(({ keys }) => setUserKeys(keys))
         .catch((loadError) => setError(loadError.message));
     }
-  }, [section, canManageConfig, canManageKeys, canReadPool, canReadUsers, readme]);
+  }, [activeSection, canManageConfig, canManageKeys, canReadPool, canReadUsers, readme]);
 
   async function runAction(action, message) {
     setBusy(true);
@@ -378,16 +425,6 @@ export default function Dashboard({ user, onLogout }) {
 
   const formatMoney = (fen) => `¥${(Number(fen || 0) / 100).toFixed(2)}`;
 
-  const navigation = [
-    { id: 'home', label: '首页', icon: '⌂', visible: true },
-    { id: 'plan', label: '套餐', icon: '◉', visible: canReadPlan },
-    { id: 'account', label: '个人中心', icon: '♙', visible: true },
-    { id: 'keys', label: '密钥管理', icon: '⚿', visible: canManageKeys },
-    { id: 'users', label: '用户管理', icon: '♙', visible: canReadUsers },
-    { id: 'pool', label: '号池管理', icon: '▦', visible: canReadPool },
-    { id: 'settings', label: '系统设置', icon: '⚙', visible: canManageConfig },
-  ].filter((item) => item.visible);
-
   return (
     <div className="dashboard">
       <aside className="dashboard-sidebar">
@@ -402,14 +439,24 @@ export default function Dashboard({ user, onLogout }) {
         <nav className="sidebar-nav" aria-label="主导航">
           {navigation.map((item) => (
             <button
-              className={`nav-item${section === item.id ? ' active' : ''}`}
+              className={`nav-item${activeSection === item.id ? ' active' : ''}`}
               type="button"
               key={item.id}
-              onClick={() => { setSection(item.id); setError(''); setNotice(''); setCreatedApiKey(null); setIssuedVoucher(null); }}
+              onClick={() => {
+                const path = item.id === 'home' ? '/' : `/${item.id}`;
+                if (window.location.pathname !== path) {
+                  window.history.pushState({ section: item.id }, '', path);
+                }
+                setSection(item.id);
+                setError('');
+                setNotice('');
+                setCreatedApiKey(null);
+                setIssuedVoucher(null);
+              }}
             >
               <span className="nav-icon" aria-hidden="true">{item.icon}</span>
               {item.label}
-              {section === item.id && <span className="nav-active-mark" />}
+              {activeSection === item.id && <span className="nav-active-mark" />}
             </button>
           ))}
         </nav>
@@ -421,7 +468,7 @@ export default function Dashboard({ user, onLogout }) {
 
       <main className="dashboard-main">
         <header className="dashboard-topbar">
-          <div className="breadcrumb"><span>工作空间</span><b>/</b>{navigation.find((item) => item.id === section)?.label}</div>
+          <div className="breadcrumb"><span>工作空间</span><b>/</b>{navigation.find((item) => item.id === activeSection)?.label}</div>
           <div className="account-menu">
             <span className="account-avatar">{user.username.slice(0, 1).toUpperCase()}</span>
             <span className="account-name">{user.username}</span>
@@ -433,7 +480,7 @@ export default function Dashboard({ user, onLogout }) {
           {error && <div className="dashboard-alert error" role="alert">{error}</div>}
           {notice && <div className="dashboard-alert success" role="status">{notice}</div>}
 
-          {section === 'home' && (
+          {activeSection === 'home' && (
             <div className="content-card readme-card">
               <div className="page-heading">
                 <div><p className="page-eyebrow">DOCUMENTATION</p><h1>项目说明</h1></div>
@@ -443,7 +490,7 @@ export default function Dashboard({ user, onLogout }) {
             </div>
           )}
 
-          {section === 'plan' && canReadPlan && (
+          {activeSection === 'plan' && canReadPlan && (
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">BILLING PLAN</p><h1>套餐</h1><p className="page-subtitle">连接 WebSocket 代理时按使用时长计费。</p></div>
@@ -459,7 +506,7 @@ export default function Dashboard({ user, onLogout }) {
             </>
           )}
 
-          {section === 'account' && (
+          {activeSection === 'account' && (
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">PERSONAL CENTER</p><h1>个人中心</h1></div>
@@ -498,7 +545,7 @@ export default function Dashboard({ user, onLogout }) {
             </>
           )}
 
-          {section === 'settings' && canManageConfig && (
+          {activeSection === 'settings' && canManageConfig && (
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">SYSTEM CONFIGURATION</p><h1>系统设置</h1><p className="page-subtitle">保存后立即重载当前进程中的易支付配置。</p></div>
@@ -522,7 +569,7 @@ export default function Dashboard({ user, onLogout }) {
             </>
           )}
 
-          {section === 'keys' && canManageKeys && (
+          {activeSection === 'keys' && canManageKeys && (
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">WEBSOCKET ACCESS</p><h1>密钥管理</h1><p className="page-subtitle">使用密钥通过 Bearer 认证连接 WebSocket 代理。</p></div>
@@ -586,7 +633,7 @@ export default function Dashboard({ user, onLogout }) {
             </>
           )}
 
-          {section === 'users' && (
+          {activeSection === 'users' && (
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">ACCESS CONTROL</p><h1>用户管理</h1><p className="page-subtitle">查看用户、权限与关联数据。</p></div>
@@ -654,7 +701,7 @@ export default function Dashboard({ user, onLogout }) {
             </>
           )}
 
-          {section === 'pool' && (
+          {activeSection === 'pool' && (
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">ACCOUNT POOL</p><h1>号池管理</h1><p className="page-subtitle">账号密码不会显示在界面中。</p></div>

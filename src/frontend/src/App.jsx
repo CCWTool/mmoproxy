@@ -43,6 +43,12 @@ export default function App() {
   const [registrationNotice, setRegistrationNotice] = useState('');
 
   useEffect(() => {
+    if (authStatus === 'unauthenticated') {
+      document.title = `${isRegistering ? '注册' : '登录'} · mmoproxy`;
+    }
+  }, [authStatus, isRegistering]);
+
+  useEffect(() => {
     let active = true;
 
     fetch('/api/auth/session', { credentials: 'same-origin' })
