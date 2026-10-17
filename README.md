@@ -70,8 +70,8 @@ DB_TYPE=mysql DB_HOST=localhost DB_PORT=3306 DB_USER=user DB_PASSWORD=password D
 登录后的工作空间对所有用户开放，首页显示根目录的 `TOUSER.md` 用户指南。管理员权限由以下权限节点控制：
 
 - `admin.users.read`：查看用户列表、权限和用户数据。
-- `admin.users.edit`：仅修改用户密码。
-- `admin.users.permissions`：创建用户、修改用户权限。
+- `admin.users.edit`：仅修改权限严格低于自己的用户密码，不能修改权限相同或更高用户的密码。
+- `admin.users.permissions`：创建用户、修改权限严格低于自己的其他用户权限。可授予的权限仅限操作者自身已有权限，且不可授予 `admin.users.permissions`。
 - `admin.users.ban`：封禁和解封用户（移除或恢复目标用户的 `user.login` 权限）。
 - `admin.users.plan`：修改用户套餐。
 - `admin.users.balance`：设置或增加用户余额。

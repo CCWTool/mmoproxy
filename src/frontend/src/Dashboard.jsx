@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
 import GitHubLink from './GitHubLink.jsx';
+import {
+  canChangeUserPassword,
+  canChangeUserPermissions,
+} from '../../backend/permission-delegation.js';
 
 const permissionOptions = [
   ['user.plan.read', '查看套餐'],
@@ -178,7 +182,13 @@ export default function Dashboard({ user, onLogout }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const canChangePassword = user.permissions.includes('admin.users.edit');
+  const canChangeEditingUserPassword = canChangePassword
+    && editingUser
+    && canChangeUserPassword(user, editingUser);
   const canChangePermissions = user.permissions.includes('admin.users.permissions');
+  const canChangeEditingUserPermissions = canChangePermissions
+    && editingUser
+    && canChangeUserPermissions(user, editingUser.id, editingUser);
   const canBanUsers = user.permissions.includes('admin.users.ban');
   const canChangeUserPlan = user.permissions.includes('admin.users.plan');
   const canChangeBalance = user.permissions.includes('admin.users.balance');
@@ -331,7 +341,7 @@ export default function Dashboard({ user, onLogout }) {
       && JSON.stringify(userDraft.permissions) !== JSON.stringify(editingUser.permissions)) {
       changes.permissions = userDraft.permissions;
     }
-    if (canChangePassword && userDraft.password) changes.password = userDraft.password;
+    if (canChangeEditingUserPassword && userDraft.password) changes.password = userDraft.password;
     if (canBanUsers && userDraft.isBanned !== editingUser.isBanned) changes.isBanned = userDraft.isBanned;
     if (canChangeUserPlan
       && (userDraft.planId ? Number(userDraft.planId) : null) !== editingUser.planId) {
@@ -863,7 +873,7 @@ export default function Dashboard({ user, onLogout }) {
                 <div><p className="page-eyebrow">ACCESS CONTROL</p><h1>用户管理</h1><p className="page-subtitle">查看用户、权限与关联数据。</p></div>
                 <span className="count-pill">{users === null ? '--' : users.length} 位用户</span>
               </div>
-              {canChangePermissions && (
+              {canChangeEditingUserPermissions && (
                 <form className="content-card create-form" onSubmit={createUser}>
                   <div className="card-heading"><div><h2>新建用户</h2><p>新用户可使用用户名和密码登录。</p></div></div>
                   <div className="form-grid">
@@ -941,7 +951,7 @@ export default function Dashboard({ user, onLogout }) {
                       </fieldset>
                     )}
                     <div className="modal-fields">
-                      {canChangePassword && <label>设置新密码<input type="password" value={userDraft.password} onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))} placeholder="留空表示不修改" /></label>}
+                      {canChangeEditingUserPassword && <label>设置新密码<input type="password" value={userDraft.password} onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))} placeholder="留空表示不修改" /></label>}
                       {canBanUsers && <label className="modal-checkbox"><input type="checkbox" checked={userDraft.isBanned} onChange={(event) => setUserDraft((current) => ({ ...current, isBanned: event.target.checked }))} />封禁此用户</label>}
                       {canChangeUserPlan && <label>用户套餐<select value={userDraft.planId} onChange={(event) => setUserDraft((current) => ({ ...current, planId: event.target.value }))}><option value="">默认按量计费</option>{plans?.map((plan) => <option value={plan.id} key={plan.id}>{plan.name}（{plan.type === 'subscription' ? '订阅' : '资源包'}）</option>)}</select></label>}
                       {canChangeBalance && <>

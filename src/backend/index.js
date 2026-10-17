@@ -6,6 +6,11 @@ import { randomUUID } from 'node:crypto';
 import { chmod, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import db, { knownPermissions } from './db.js';
 import { deleteUserSession, validateUserSession } from './session.js';
+import {
+    canChangeUserPassword,
+    canChangeUserPermissions,
+    canDelegateUserPermissions,
+} from './permission-delegation.js';
 import { attachProxy } from './proxy.js';
 import { isCorsPreflightRequest, setCorsHeaders } from './cors.js';
 import {
@@ -309,12 +314,16 @@ app.post('/api/admin/vouchers', async (request, response) => {
 
 app.post('/api/admin/users', async (request, response) => {
     try {
-        if (!await requirePermissions(request, response, ['admin.users.permissions'])) return;
+        const actor = await requirePermissions(request, response, ['admin.users.permissions']);
+        if (!actor) return;
         const { username, password, permissions } = request.body ?? {};
         if (typeof username !== 'string' || !username.trim() || username.trim().length > 64
             || !validatePassword(password) || !Array.isArray(permissions)
             || permissions.some((permission) => typeof permission !== 'string' || !knownPermissions.includes(permission))) {
             return response.status(400).json({ message: '请提供有效的用户名、密码和权限列表。' });
+        }
+        if (!canDelegateUserPermissions(actor, null, permissions)) {
+            return response.status(403).json({ message: '只能授予自己已有的权限，且不能授予 admin.users.permissions。' });
         }
         const success = await db.createUser(
             username.trim(),
@@ -360,8 +369,23 @@ app.put('/api/admin/users/:id', async (request, response) => {
                     || !knownPermissions.includes(permission)))) {
             return response.status(400).json({ message: '权限列表无效。' });
         }
+        if (Object.hasOwn(input, 'permissions')
+            && !canDelegateUserPermissions(actor, id, input.permissions)) {
+            return response.status(403).json({ message: '只能修改其他用户，且只能授予自己已有的权限（不能授予 admin.users.permissions）。' });
+        }
         if (Object.hasOwn(input, 'password') && !validatePassword(input.password)) {
             return response.status(400).json({ message: '密码无效。' });
+        }
+        let target;
+        if (Object.hasOwn(input, 'permissions') || Object.hasOwn(input, 'password')) {
+            target = await db.getUserById(id);
+            if (!target) return response.status(404).json({ message: '用户不存在。' });
+        }
+        if (Object.hasOwn(input, 'permissions') && !canChangeUserPermissions(actor, id, target)) {
+            return response.status(403).json({ message: '只能修改权限严格少于自己的用户的权限。' });
+        }
+        if (Object.hasOwn(input, 'password') && !canChangeUserPassword(actor, target)) {
+            return response.status(403).json({ message: '只能修改权限严格少于自己的用户密码。' });
         }
         if (Object.hasOwn(input, 'isBanned') && typeof input.isBanned !== 'boolean') {
             return response.status(400).json({ message: '封禁状态无效。' });
@@ -394,15 +418,24 @@ app.put('/api/admin/users/:id', async (request, response) => {
 
 app.put('/api/admin/users/:id/permissions', async (request, response) => {
     try {
-        if (!await requirePermissions(request, response, ['admin.users.permissions'])) return;
+        const actor = await requirePermissions(request, response, ['admin.users.permissions']);
+        if (!actor) return;
         const id = Number(request.params.id);
         const { permissions } = request.body ?? {};
         if (!Number.isSafeInteger(id) || id < 1 || !Array.isArray(permissions)
             || permissions.some((permission) => typeof permission !== 'string' || !knownPermissions.includes(permission))) {
             return response.status(400).json({ message: '请提供有效的用户编号和权限列表。' });
         }
+        if (!canDelegateUserPermissions(actor, id, permissions)) {
+            return response.status(403).json({ message: '只能修改其他用户，且只能授予自己已有的权限（不能授予 admin.users.permissions）。' });
+        }
+        const target = await db.getUserById(id);
+        if (!target) return response.status(404).json({ message: '用户不存在。' });
+        if (!canChangeUserPermissions(actor, id, target)) {
+            return response.status(403).json({ message: '只能修改权限严格少于自己的用户的权限。' });
+        }
         const success = await db.updateAdminUser(id, { permissions: [...new Set(permissions)] });
-        if (!success) return response.status(404).json({ message: '用户不存在。' });
+        if (!success) return response.status(404).json({ message: '用户不存在或没有可保存的更改。' });
         return response.json({ success: true });
     } catch (error) {
         console.error('Error updating user permissions:', error);
@@ -412,10 +445,16 @@ app.put('/api/admin/users/:id/permissions', async (request, response) => {
 
 app.put('/api/admin/users/:id/password', async (request, response) => {
     try {
-        if (!await requirePermissions(request, response, ['admin.users.edit'])) return;
+        const actor = await requirePermissions(request, response, ['admin.users.edit']);
+        if (!actor) return;
         const id = Number(request.params.id);
         if (!Number.isSafeInteger(id) || id < 1 || !validatePassword(request.body?.password)) {
             return response.status(400).json({ message: '请提供有效的用户编号和密码。' });
+        }
+        const target = await db.getUserById(id);
+        if (!target) return response.status(404).json({ message: '用户不存在。' });
+        if (!canChangeUserPassword(actor, target)) {
+            return response.status(403).json({ message: '只能修改权限严格少于自己的用户密码。' });
         }
         const success = await db.updateUserPassword(id, request.body.password);
         if (!success) return response.status(404).json({ message: '用户不存在。' });
