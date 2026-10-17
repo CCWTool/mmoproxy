@@ -295,6 +295,7 @@ test('creates, rotates, lists, and removes owner-scoped API keys without storing
 
 test('validates bearer keys against their associated user and reads number-pool entries', async () => {
     assert.ok(db.db.pragma('table_info(number_pool)').some((column) => column.name === 'cookie-user-id'));
+    assert.ok(db.db.pragma('table_info(number_pool)').some((column) => column.name === 'name'));
     assert.ok(db.db.pragma('table_info(number_pool)').some((column) => column.name === 'token_valid'));
     assert.ok(db.db.pragma('table_info(number_pool)').some((column) => column.name === 'validation_info'));
     const user = db.db.prepare('SELECT id FROM users WHERE username = ?').get('proxy-user');
@@ -321,6 +322,14 @@ test('validates bearer keys against their associated user and reads number-pool 
     assert.equal(await db.updateNumberPoolToken('pool-account-1', 'refreshed-token', 'refreshed-oid'), true);
     assert.equal((await db.getRandomNumberPoolEntry()).token, 'refreshed-token');
     assert.equal((await db.getRandomNumberPoolEntry()).cookieUserId, 'refreshed-oid');
+    assert.equal(await db.updateNumberPoolProfile('pool-account-1', 'Pool Student', 'student-oid'), true);
+    assert.deepEqual(await db.getNumberPoolAccount('pool-account-1'), {
+        uuid: 'pool-account-1',
+        token: 'refreshed-token',
+        password: null,
+        cookieUserId: 'student-oid',
+        name: 'Pool Student',
+    });
 });
 
 test('lists pool accounts without secrets and resets cached credentials when changing passwords', async () => {
@@ -332,19 +341,20 @@ test('lists pool accounts without secrets and resets cached credentials when cha
         token: 'cached-token',
         password: 'initial-pool-password',
         cookieUserId: 'cached-user',
+        name: '',
     });
     assert.equal(await db.getNumberPoolAccount('missing-account'), null);
     assert.deepEqual(await db.listNumberPoolAccounts(), [
-        { uuid: 'managed-account', cookieUserId: 'cached-user', hasPassword: true, valid: null, info: '' },
-        { uuid: 'pool-account-1', cookieUserId: 'refreshed-oid', hasPassword: false, valid: null, info: '' },
+        { uuid: 'managed-account', cookieUserId: 'cached-user', name: '', hasPassword: true, valid: null, info: '' },
+        { uuid: 'pool-account-1', cookieUserId: 'student-oid', name: 'Pool Student', hasPassword: false, valid: null, info: '' },
     ]);
 
     await db.updateNumberPoolValidation('managed-account', false, '密码错误');
     await db.createNumberPoolAccount('token-only-account', null, 'token-only');
     assert.deepEqual(await db.listNumberPoolAccounts(), [
-        { uuid: 'managed-account', cookieUserId: 'cached-user', hasPassword: true, valid: false, info: '密码错误' },
-        { uuid: 'pool-account-1', cookieUserId: 'refreshed-oid', hasPassword: false, valid: null, info: '' },
-        { uuid: 'token-only-account', cookieUserId: null, hasPassword: false, valid: null, info: '' },
+        { uuid: 'managed-account', cookieUserId: 'cached-user', name: '', hasPassword: true, valid: false, info: '密码错误' },
+        { uuid: 'pool-account-1', cookieUserId: 'student-oid', name: 'Pool Student', hasPassword: false, valid: null, info: '' },
+        { uuid: 'token-only-account', cookieUserId: null, name: '', hasPassword: false, valid: null, info: '' },
     ]);
 
     assert.equal(await db.updateNumberPoolPassword('managed-account', 'updated-pool-password'), true);

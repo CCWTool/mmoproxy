@@ -18,9 +18,10 @@
     "dev": "concurrently -k -n backend,frontend -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
     "dev:backend": "node --watch src/backend/index.js",
     "dev:frontend": "vite --config src/frontend/vite.config.js --host 0.0.0.0",
-    "build": "npm run build:frontend && npm run build:backend",
+    "build": "npm run build:frontend && npm run build:backend && npm run build:client",
     "build:frontend": "vite build --config src/frontend/vite.config.js",
     "build:backend": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('dist/backend', { recursive: true, force: true })\" && esbuild src/backend/index.js --bundle --platform=node --format=cjs --target=node18 --external:better-sqlite3 --external:mysql2 --external:redis --minify --outfile=dist/backend/index.cjs",
+    "build:client": "esbuild src/client/index.js --bundle --platform=node --format=esm --target=node18 --minify --outfile=dist/client.js",
     "start": "node dist/backend/index.cjs",
     "test": "node --test"
   },

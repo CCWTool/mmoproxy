@@ -205,6 +205,7 @@ class UserDatabase {
                     token TEXT,
                     password TEXT,
                     \`cookie-user-id\` TEXT,
+                    name TEXT NOT NULL DEFAULT '',
                     token_valid INTEGER,
                     validation_info TEXT NOT NULL DEFAULT ''
                 );
@@ -235,6 +236,9 @@ class UserDatabase {
             const poolColumns = this.db.pragma('table_info(number_pool)');
             if (!poolColumns.some((column) => column.name === 'cookie-user-id')) {
                 this.db.exec('ALTER TABLE number_pool ADD COLUMN `cookie-user-id` TEXT');
+            }
+            if (!poolColumns.some((column) => column.name === 'name')) {
+                this.db.exec("ALTER TABLE number_pool ADD COLUMN name TEXT NOT NULL DEFAULT ''");
             }
             if (!poolColumns.some((column) => column.name === 'token_valid')) {
                 this.db.exec('ALTER TABLE number_pool ADD COLUMN token_valid INTEGER');
@@ -382,6 +386,7 @@ class UserDatabase {
                 token TEXT NULL,
                 password TEXT NULL,
                 \`cookie-user-id\` VARCHAR(255) NULL,
+                name VARCHAR(255) NOT NULL DEFAULT '',
                 token_valid BOOLEAN NULL,
                 validation_info TEXT NULL
             )
@@ -411,6 +416,9 @@ class UserDatabase {
         const [poolColumns] = await this.db.query('SHOW COLUMNS FROM number_pool');
         if (!poolColumns.some((column) => column.Field === 'cookie-user-id')) {
             await this.db.query('ALTER TABLE number_pool ADD COLUMN `cookie-user-id` VARCHAR(255) NULL');
+        }
+        if (!poolColumns.some((column) => column.Field === 'name')) {
+            await this.db.query("ALTER TABLE number_pool ADD COLUMN name VARCHAR(255) NOT NULL DEFAULT ''");
         }
         if (!poolColumns.some((column) => column.Field === 'token_valid')) {
             await this.db.query('ALTER TABLE number_pool ADD COLUMN token_valid BOOLEAN NULL');
@@ -1524,7 +1532,7 @@ class UserDatabase {
 
     async listNumberPoolAccounts() {
         await this.ready;
-        const query = 'SELECT uuid, `cookie-user-id` AS cookieUserId, password IS NOT NULL AS hasPassword, token_valid AS valid, validation_info AS info FROM number_pool ORDER BY uuid';
+        const query = 'SELECT uuid, `cookie-user-id` AS cookieUserId, name, password IS NOT NULL AS hasPassword, token_valid AS valid, validation_info AS info FROM number_pool ORDER BY uuid';
         return this.config.type === 'sqlite'
             ? this.db.prepare(query).all().map((account) => ({
                 ...account,
@@ -1541,7 +1549,7 @@ class UserDatabase {
 
     async getNumberPoolAccounts() {
         await this.ready;
-        const query = 'SELECT uuid, token, password, `cookie-user-id` AS cookieUserId FROM number_pool ORDER BY uuid';
+        const query = 'SELECT uuid, token, password, `cookie-user-id` AS cookieUserId, name FROM number_pool ORDER BY uuid';
         return this.config.type === 'sqlite'
             ? this.db.prepare(query).all()
             : (await this.db.query(query))[0];
@@ -1549,7 +1557,7 @@ class UserDatabase {
 
     async getNumberPoolAccount(uuid) {
         await this.ready;
-        const query = 'SELECT uuid, token, password, `cookie-user-id` AS cookieUserId FROM number_pool WHERE uuid = ?';
+        const query = 'SELECT uuid, token, password, `cookie-user-id` AS cookieUserId, name FROM number_pool WHERE uuid = ?';
         if (this.config.type === 'sqlite') {
             return this.db.prepare(query).get(uuid) ?? null;
         }
@@ -1631,6 +1639,16 @@ class UserDatabase {
 
         const [result] = await this.db.execute(query, [token, cookieUserId, uuid]);
         return result.affectedRows === 1;
+    }
+
+    async updateNumberPoolProfile(uuid, name, cookieUserId) {
+        await this.ready;
+        const query = 'UPDATE number_pool SET name = COALESCE(?, name), `cookie-user-id` = COALESCE(?, `cookie-user-id`) WHERE uuid = ?';
+        const params = [name, cookieUserId, uuid];
+        if (this.config.type === 'sqlite') {
+            return this.db.prepare(query).run(...params).changes === 1;
+        }
+        return (await this.db.execute(query, params))[0].affectedRows === 1;
     }
 
     async updateNumberPoolValidation(uuid, valid, info) {

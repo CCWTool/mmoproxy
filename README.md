@@ -105,6 +105,19 @@ DB_TYPE=mysql DB_HOST=localhost DB_PORT=3306 DB_USER=user DB_PASSWORD=password D
 
 HTTP 和 WebSocket 流量均由 `http-proxy` 库负责转发。
 
+远程连接时建议使用 HTTPS，避免访问令牌在网络中明文传输。
+
+当本地客户端不便设置 Bearer 请求头时，可从应用的 3000 端口下载独立 Node.js 脚本：
+
+```sh
+curl -o client.js http://<应用地址>:3000/client.js
+MMOPROXY_SERVER_URL=http://<代理地址>:9989 \
+MMOPROXY_TOKEN='<访问令牌>' \
+node client.js
+```
+
+客户端会将本地 `http://127.0.0.1:15432` 上的 HTTP 和 WebSocket 请求转发到配置的代理地址，并由客户端注入 Bearer 令牌；本地请求无需令牌。脚本只绑定回环接口，不应将其改为对外可访问的监听地址。若应用与代理地址相同，`<代理地址>` 使用该主机的 9989 代理端口。
+
 通常通过 `Authorization: Bearer <token>` 请求头携带访问令牌；客户端不方便设置请求头时，也可通过 `?token=<token>` GET 参数携带（HTTP 和 WebSocket 握手均支持）。查询参数中的令牌不会转发给上游。由于 URL 可能被浏览器、代理或服务日志记录，请优先使用请求头。
 
 每个连接都必须提供 `Authorization: Bearer <key>`。`bearer_tokens` 表用 `key` 主键索引令牌，并用 `id` 关联 `users.id`；只有表中关联到现存用户的令牌才会获准连接。令牌由部署方写入数据库，例如：
@@ -117,7 +130,7 @@ INSERT INTO bearer_tokens (`key`, id) VALUES ('<random-secret>', <user-id>);
 
 创建的密钥用于 WebSocket 握手请求的 `Authorization: Bearer <密钥>` 请求头。
 
-号池数据存放在 `number_pool` 表中。每行必须有唯一的 `uuid`，`token`、`password` 和 `cookie-user-id` 可为空；连接时随机选一行，Cookie 以 `token=<token>; cookie-user-id=<cookie-user-id>` 形式注入（`cookie-user-id` 为空时兼容使用 `uuid`）。可用数据库 SQL 增删号池记录。启动时会用 token 请求 CCW 学生详情接口验证账号；token 无效时，密码账号会尝试重新登录，仅 token 账号则直接标记无效。号池管理页面会显示验证状态和登录失败信息。若随机选中记录的 `token` 为空，代理会用账号密码调用 CCW 登录接口并查询学生 OID，随后将 token 和 `cookie-user-id` 保存到号池记录。登录生成的完整 Cookie 按 `uuid:password` 在内存缓存 30 分钟。
+号池数据存放在 `number_pool` 表中。每行必须有唯一的 `uuid`，`token`、`password` 和 `cookie-user-id` 可为空；连接时随机选一行，Cookie 以 `token=<token>; cookie-user-id=<cookie-user-id>` 形式注入（`cookie-user-id` 为空时兼容使用 `uuid`）。可用数据库 SQL 增删号池记录。启动时会对所有账号调用 CCW 学生详情接口验证 token，并保存响应中的账号名称和 OID；仅 token 账号的 `cookie-user-id` 也会通过该接口补全。token 无效时，密码账号会尝试重新登录，仅 token 账号则标记无效。号池管理页面会显示名称、用户标识、验证状态和登录失败信息。若随机选中记录的 `token` 为空，代理会用账号密码调用 CCW 登录接口并通过学生详情接口查询 OID，随后将 token、名称和 `cookie-user-id` 保存到号池记录。登录生成的完整 Cookie 按 `uuid:password` 在内存缓存 30 分钟。
 
 上游会收到客户端的普通请求头（不包括客户端的 Bearer 授权头和 Cookie），WebSocket 握手头由代理重建。设置 `WS_PROXY_HEADERS` 可用 JSON 对象增加或替换普通上游请求头，例如 `{"x-client-type":"proxy"}`；Cookie 始终由号池生成，协议/连接类请求头不允许覆盖。
 

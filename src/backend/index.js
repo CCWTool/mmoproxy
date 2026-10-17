@@ -31,6 +31,7 @@ import {
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 const frontendDir = path.resolve('dist/frontend');
+const clientPath = path.resolve('dist/client.js');
 const sessionCookieName = 'session';
 
 app.disable('x-powered-by');
@@ -792,6 +793,12 @@ app.post('/api/web/register', async (request, response) => {
         console.error('Error during registration:', error);
         return response.status(500).json({ message: '注册服务暂时不可用，请稍后重试。' });
     }
+});
+
+app.get('/client.js', (_request, response, next) => {
+    response.sendFile(clientPath, (error) => {
+        if (error) next(error);
+    });
 });
 
 app.use(express.static(frontendDir));

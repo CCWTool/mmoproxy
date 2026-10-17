@@ -46,8 +46,9 @@ test('logs in to CCW, fetches the student OID, and caches the complete Cookie', 
         }
         return {
             ok: true,
+            status: 200,
             async json() {
-                return { body: { studentOid: 'student-oid' } };
+                return { body: { name: 'Student Name', oid: 'student-oid' } };
             },
         };
     };
@@ -65,8 +66,14 @@ test('logs in to CCW, fetches the student OID, and caches the complete Cookie', 
             password: 'password-1',
             extra: '{"device":"Windows 10","browser":"Chrome 146","scene":null}',
         });
-        assert.equal(calls[1].url, 'https://community-web.ccw.site/students/profile');
-        assert.deepEqual(JSON.parse(calls[1].options.body), { studentNumber: 'login-account-1' });
+        assert.equal(calls[1].url, 'https://community-web.ccw.site/students/self/detail');
+        assert.equal(calls[1].options.method, 'POST');
+        assert.equal(calls[1].options.headers.Cookie, 'token=ccw-token; cookie-user-id=login-account-1');
+        assert.deepEqual(JSON.parse(calls[1].options.body), {
+            needGrade: true,
+            needExtraInfo: true,
+            fields: ['gender', 'school', 'qq', 'host', 'bio', 'province', 'city', 'addressCode', 'accountNumber', 'createdAt', 'updatedAt', 'parents'],
+        });
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -82,8 +89,9 @@ test('persists the login token and student OID returned by CCW', async () => {
         }
         : {
             ok: true,
+            status: 200,
             async json() {
-                return { body: { studentOid: 'pool-student-oid' } };
+                return { body: { name: 'Pool Account', oid: 'pool-student-oid' } };
             },
         };
 
@@ -101,10 +109,17 @@ test('persists the login token and student OID returned by CCW', async () => {
                 updates.push(values);
                 return true;
             },
+            async updateNumberPoolProfile(...values) {
+                updates.push(['profile', ...values]);
+                return true;
+            },
         });
 
         assert.equal(cookie, 'token=pool-login-token; cookie-user-id=pool-student-oid');
-        assert.deepEqual(updates, [['login-pool-account', 'pool-login-token', 'pool-student-oid']]);
+        assert.deepEqual(updates, [
+            ['login-pool-account', 'pool-login-token', 'pool-student-oid'],
+            ['profile', 'login-pool-account', 'Pool Account', 'pool-student-oid'],
+        ]);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -132,7 +147,7 @@ test('immediately logs in with fresh credentials and saves the token and validat
         calls.push(url);
         return url === 'https://sso.ccw.site/web/auth/login-by-password'
             ? { ok: true, headers: { getSetCookie: () => ['token=fresh-login-token; Path=/'] } }
-            : { ok: true, async json() { return { body: { studentOid: 'fresh-student-oid' } }; } };
+            : { status: 200, async json() { return { body: { name: 'Fresh Account', oid: 'fresh-student-oid' } }; } };
     };
 
     try {
@@ -141,15 +156,17 @@ test('immediately logs in with fresh credentials and saves the token and validat
             password: 'account-password',
         }, {
             async updateNumberPoolToken(...values) { updates.push(['token', ...values]); return true; },
+            async updateNumberPoolProfile(...values) { updates.push(['profile', ...values]); return true; },
             async updateNumberPoolValidation(...values) { updates.push(['validation', ...values]); return true; },
         });
         assert.deepEqual(result, { token: 'fresh-login-token', cookieUserId: 'fresh-student-oid' });
         assert.deepEqual(calls, [
             'https://sso.ccw.site/web/auth/login-by-password',
-            'https://community-web.ccw.site/students/profile',
+            'https://community-web.ccw.site/students/self/detail',
         ]);
         assert.deepEqual(updates, [
             ['token', 'immediate-login-account', 'fresh-login-token', 'fresh-student-oid'],
+            ['profile', 'immediate-login-account', 'Fresh Account', 'fresh-student-oid'],
             ['validation', 'immediate-login-account', true, ''],
         ]);
     } finally {
@@ -161,7 +178,7 @@ test('removing a pool account also clears its cached login Cookie', async () => 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (url) => url === 'https://sso.ccw.site/web/auth/login-by-password'
         ? { ok: true, headers: { getSetCookie: () => ['token=before-removal; Path=/'] } }
-        : { ok: true, async json() { return { body: { studentOid: 'student-oid' } }; } };
+        : { status: 200, async json() { return { body: { name: 'Student Name', oid: 'student-oid' } }; } };
     let removed = false;
     const database = {
         async deleteNumberPoolAccount(uuid) {
@@ -182,7 +199,9 @@ test('removing a pool account also clears its cached login Cookie', async () => 
         const callsBeforeRetry = [];
         globalThis.fetch = async (url) => {
             callsBeforeRetry.push(url);
-            return { ok: true, headers: { getSetCookie: () => ['token=after-removal; Path=/'] } };
+            return url === 'https://sso.ccw.site/web/auth/login-by-password'
+                ? { ok: true, headers: { getSetCookie: () => ['token=after-removal; Path=/'] } }
+                : { status: 403, statusText: 'Forbidden' };
         };
         await assert.rejects(getRandomPoolCookie(database), { code: 'PROFILE_FAILED' });
         assert.equal(callsBeforeRetry.length, 2);
@@ -197,7 +216,10 @@ test('validates a token with the student detail endpoint and persists its status
     const updates = [];
     globalThis.fetch = async (url, options) => {
         calls.push({ url, options });
-        return { status: 200 };
+        return {
+            status: 200,
+            async json() { return { body: { name: 'Token Account', oid: 'student-oid' } }; },
+        };
     };
 
     try {
@@ -208,11 +230,53 @@ test('validates a token with the student detail endpoint and persists its status
             cookieUserId: 'student-oid',
         }, {
             async updateNumberPoolValidation(...values) { updates.push(values); },
+            async updateNumberPoolProfile(...values) { updates.push(['profile', ...values]); },
         });
         assert.deepEqual(result, { valid: true, info: '' });
         assert.equal(calls[0].url, 'https://community-web.ccw.site/students/self/detail');
+        assert.equal(calls[0].options.method, 'POST');
         assert.equal(calls[0].options.headers.Cookie, 'token=valid-token; cookie-user-id=student-oid');
-        assert.deepEqual(updates, [['token-account', true, '']]);
+        assert.deepEqual(JSON.parse(calls[0].options.body), {
+            needGrade: true,
+            needExtraInfo: true,
+            fields: ['gender', 'school', 'qq', 'host', 'bio', 'province', 'city', 'addressCode', 'accountNumber', 'createdAt', 'updatedAt', 'parents'],
+        });
+        assert.deepEqual(updates, [
+            ['profile', 'token-account', 'Token Account', 'student-oid'],
+            ['token-account', true, ''],
+        ]);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test('fills a token-only account OID and saves its name from student details', async () => {
+    const originalFetch = globalThis.fetch;
+    const updates = [];
+    globalThis.fetch = async (_url, options) => ({
+        status: 200,
+        async json() {
+            assert.equal(options.headers.Cookie, 'token=token-only-value; cookie-user-id=token-only-account');
+            return { body: { name: 'Token Student', oid: 'resolved-student-oid' } };
+        },
+    });
+
+    try {
+        const result = await validateNumberPoolAccount({
+            uuid: 'token-only-account',
+            token: 'token-only-value',
+            password: null,
+            cookieUserId: null,
+        }, {
+            async updateNumberPoolProfile(...values) { updates.push(['profile', ...values]); },
+            async updateNumberPoolValidation(...values) { updates.push(['validation', ...values]); },
+        });
+
+        assert.deepEqual(result, { valid: true, info: '' });
+        assert.deepEqual(updates, [
+            ['profile', 'token-only-account', 'Token Student', 'resolved-student-oid'],
+            ['validation', 'token-only-account', true, ''],
+        ]);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -224,7 +288,7 @@ test('retries invalid password accounts and records the login response message',
     const updates = [];
     globalThis.fetch = async (url, options) => {
         calls.push({ url, options });
-        if (url === 'https://community-web.ccw.site/students/self/detail') return { status: 401 };
+        if (url === 'https://community-web.ccw.site/students/self/detail') return { status: 401, statusText: 'Unauthorized' };
         return {
             headers: { getSetCookie: () => [] },
             async json() { return { msg: '密码错误或账号被封禁' }; },
@@ -252,15 +316,18 @@ test('retries invalid password accounts and records the login response message',
 test('accepts password login when Set-Cookie is present and saves the refreshed credentials', async () => {
     const originalFetch = globalThis.fetch;
     const updates = [];
+    let detailsCalls = 0;
     globalThis.fetch = async (url) => {
-        if (url === 'https://community-web.ccw.site/students/self/detail') return { status: 403 };
+        if (url === 'https://community-web.ccw.site/students/self/detail') {
+            detailsCalls += 1;
+            return detailsCalls === 1
+                ? { status: 403, statusText: 'Forbidden' }
+                : { status: 200, async json() { return { body: { name: 'Updated Account', oid: 'new-student-oid' } }; } };
+        }
         if (url === 'https://sso.ccw.site/web/auth/login-by-password') {
             return { headers: { getSetCookie: () => ['token=new-token; Path=/'] } };
         }
-        return {
-            ok: true,
-            async json() { return { body: { studentOid: 'new-student-oid' } }; },
-        };
+        throw new Error(`Unexpected request: ${url}`);
     };
 
     try {
@@ -271,11 +338,13 @@ test('accepts password login when Set-Cookie is present and saves the refreshed 
             cookieUserId: null,
         }, {
             async updateNumberPoolToken(...values) { updates.push(['token', ...values]); },
+            async updateNumberPoolProfile(...values) { updates.push(['profile', ...values]); },
             async updateNumberPoolValidation(...values) { updates.push(['validation', ...values]); },
         });
         assert.deepEqual(result, { valid: true, info: '' });
         assert.deepEqual(updates, [
             ['token', 'password-account', 'new-token', 'new-student-oid'],
+            ['profile', 'password-account', 'Updated Account', 'new-student-oid'],
             ['validation', 'password-account', true, ''],
         ]);
     } finally {
@@ -289,7 +358,7 @@ test('marks token-only accounts invalid without trying password login', async ()
     const updates = [];
     globalThis.fetch = async (url) => {
         calls.push(url);
-        return { status: 403 };
+        return { status: 403, statusText: 'Forbidden' };
     };
 
     try {
@@ -301,9 +370,9 @@ test('marks token-only accounts invalid without trying password login', async ()
         }, {
             async updateNumberPoolValidation(...values) { updates.push(values); },
         });
-        assert.deepEqual(result, { valid: false, info: '仅 token 账号无法自动重新登录。' });
+        assert.deepEqual(result, { valid: false, info: 'Failed to fetch student details: Forbidden' });
         assert.deepEqual(calls, ['https://community-web.ccw.site/students/self/detail']);
-        assert.deepEqual(updates, [['token-only-account', false, '仅 token 账号无法自动重新登录。']]);
+        assert.deepEqual(updates, [['token-only-account', false, 'Failed to fetch student details: Forbidden']]);
     } finally {
         globalThis.fetch = originalFetch;
     }

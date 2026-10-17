@@ -993,11 +993,12 @@ export default function Dashboard({ user, onLogout }) {
                 <div className="card-heading"><div><h2>号池账号</h2><p>密码和 token 不会显示；修改密码后会清除旧登录凭据。</p></div></div>
                 <div className="table-scroll">
                   <table>
-                    <thead><tr><th>账号 UUID</th><th>用户标识</th><th>状态</th><th>信息</th><th>凭据</th>{canEditPool && <th>操作</th>}</tr></thead>
+                    <thead><tr><th>账号 UUID</th><th>名称</th><th>用户标识</th><th>状态</th><th>信息</th><th>凭据</th>{canEditPool && <th>操作</th>}</tr></thead>
                     <tbody>
                       {accounts?.map((account) => (
                         <tr key={account.uuid}>
                           <td><code className="uuid-value">{account.uuid}</code></td>
+                          <td>{account.name || <span className="empty-note">—</span>}</td>
                           <td>{account.cookieUserId || <span className="empty-note">登录后生成</span>}</td>
                           <td>{account.valid === null
                             ? <span className="pool-status pending">待验证</span>
@@ -1018,8 +1019,8 @@ export default function Dashboard({ user, onLogout }) {
                           )}
                         </tr>
                       ))}
-                      {accounts === null && <tr><td className="empty-row" colSpan={canEditPool ? 6 : 5}>--</td></tr>}
-                      {accounts && !accounts.length && <tr><td className="empty-row" colSpan={canEditPool ? 6 : 5}>号池暂时没有账号。</td></tr>}
+                      {accounts === null && <tr><td className="empty-row" colSpan={canEditPool ? 7 : 6}>--</td></tr>}
+                      {accounts && !accounts.length && <tr><td className="empty-row" colSpan={canEditPool ? 7 : 6}>号池暂时没有账号。</td></tr>}
                     </tbody>
                   </table>
                 </div>
