@@ -1,6 +1,9 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_MIRROR: ${BUILD_MIRROR:-0}
     restart: unless-stopped
     depends_on:
       mariadb:

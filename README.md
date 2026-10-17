@@ -36,6 +36,12 @@ cp .env.docker.example .env
 docker compose up --build -d
 ```
 
+在网络环境需要时，可在构建前设置 `BUILD_MIRROR=1`，使用国内 Debian 和 npm 镜像加速依赖安装：
+
+```sh
+BUILD_MIRROR=1 docker compose up --build -d
+```
+
 应用运行在 `http://localhost:3000`，HTTP/WebSocket 代理端口为 `9989`。Compose 会自动启动 MariaDB 和 Redis，并为应用配置 MySQL 及 Redis 连接；数据库和 Redis 只在 Compose 内部网络开放。MariaDB 和 Redis 数据分别保存在 Docker 命名卷中。查看日志或停止服务：
 
 ```sh
