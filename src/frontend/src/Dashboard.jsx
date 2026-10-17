@@ -115,8 +115,15 @@ function moneyToFen(value) {
 }
 
 function hasActivePlan(profile, planId) {
-  return profile?.planId === planId
+  return profile?.planType === 'subscription'
+    && profile?.planId === planId
     && (!profile.planExpiresAt || profile.planExpiresAt > Date.now());
+}
+
+function formatDuration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds ? `${minutes} 分 ${remainingSeconds} 秒` : `${minutes} 分钟`;
 }
 
 const emptyPlan = {
@@ -444,12 +451,15 @@ export default function Dashboard({ user, onLogout }) {
   }
 
   async function purchasePlan(plan) {
-    if (!window.confirm(`确定以 ${formatMoney(plan.priceFen)} 购买“${plan.name}”吗？这会替换当前套餐。`)) return;
+    const purchaseEffect = plan.type === 'resource'
+      ? '购买后额度会累加到账户，并优先于套餐额度和余额使用。'
+      : '购买后会替换当前订阅套餐。';
+    if (!window.confirm(`确定以 ${formatMoney(plan.priceFen)} 购买“${plan.name}”吗？${purchaseEffect}`)) return;
     await runAction(async () => {
       await api(`/api/user/plans/${plan.id}/purchase`, { method: 'POST' });
       await refreshPlans();
       setProfile(await api('/api/user/profile'));
-    }, '套餐已购买并生效。');
+    }, plan.type === 'resource' ? '资源包已购买，额度已累计到账户。' : '订阅套餐已购买并生效。');
   }
 
   async function createApiKey() {
@@ -680,13 +690,15 @@ export default function Dashboard({ user, onLogout }) {
           {activeSection === 'plan' && (canReadPlan || canManagePlans) && (
             <>
               <div className="page-heading">
-                <div><p className="page-eyebrow">BILLING PLAN</p><h1>套餐</h1><p className="page-subtitle">购买订阅套餐或资源包；超出额度后按默认计费价格扣除余额。</p></div>
+                <div><p className="page-eyebrow">BILLING PLAN</p><h1>套餐</h1><p className="page-subtitle">订阅套餐管理有效期和超额计费；资源包额度累加到账户并优先使用。</p></div>
               </div>
               {canReadPlan && (
                 <div className="account-summary plan-summary content-card">
                   <div><span>当前套餐</span><strong>{profile?.planName && (!profile.planExpiresAt || profile.planExpiresAt > Date.now()) ? profile.planName : '默认按量计费'}</strong></div>
                   <div><span>余额</span><strong>{profile ? formatMoney(profile.balanceFen) : '--'}</strong></div>
                   <div><span>到期时间</span><strong>{profile?.planExpiresAt ? new Date(profile.planExpiresAt).toLocaleString() : '无'}</strong></div>
+                  <div><span>资源包 HTTPS 余量</span><strong>{profile?.resourceHttpsRemaining ?? '--'} 次</strong></div>
+                  <div><span>资源包 WSS 余量</span><strong>{profile ? formatDuration(profile.resourceWssSecondsRemaining) : '--'}</strong></div>
                 </div>
               )}
               {(canReadPlan || canManagePlans) && (
@@ -713,13 +725,13 @@ export default function Dashboard({ user, onLogout }) {
                   </div>
                   <div className="plan-grid" id="plan-list" role="tabpanel" aria-labelledby={`${planType}-plans-tab`}>
                     {visiblePlans?.map((plan) => (
-                      <article className={`content-card plan-card${hasActivePlan(profile, plan.id) ? ' selected' : ''}`} key={plan.id}>
+                      <article className={`content-card plan-card${plan.type === 'subscription' && hasActivePlan(profile, plan.id) ? ' selected' : ''}`} key={plan.id}>
                         <div className="plan-card-heading">
                           <div><span className="plan-indicator" /><div><h2>{plan.name}</h2><p>{plan.type === 'subscription' ? `订阅 · ${plan.durationSeconds / 86400} 天` : '资源包 · 长期有效'}</p></div></div>
                           <span className="plan-price">{formatMoney(plan.priceFen)}</span>
                         </div>
                         <p className="plan-description">
-                          HTTPS {plan.httpsQuota === -1 ? '不限' : `${plan.httpsQuota} 次`} · WSS {plan.wssDurationSeconds === -1 ? '不限时长' : `${plan.wssDurationSeconds / 60} 分钟`}
+                          HTTPS {plan.httpsQuota === -1 || (plan.type === 'resource' && plan.httpsQuota === 1000) ? '不限' : `${plan.httpsQuota} 次`} · WSS {plan.wssDurationSeconds === -1 ? '不限时长' : `${plan.wssDurationSeconds / 60} 分钟`}
                         </p>
                         {plan.type === 'subscription' && (
                           <>
@@ -727,7 +739,7 @@ export default function Dashboard({ user, onLogout }) {
                             <p className="plan-description">套餐外：HTTPS {formatMoney(plan.httpsOverageFen)} / 次 · WSS {formatMoney(plan.wssOverageFen)} / 分钟</p>
                           </>
                         )}
-                        {canReadPlan && (hasActivePlan(profile, plan.id)
+                        {canReadPlan && (plan.type === 'subscription' && hasActivePlan(profile, plan.id)
                           ? <span className="plan-default-tag">当前套餐</span>
                           : <button className="primary-button plan-buy-button" type="button" onClick={() => purchasePlan(plan)} disabled={busy}>购买</button>)}
                         {canManagePlans && (
@@ -755,15 +767,20 @@ export default function Dashboard({ user, onLogout }) {
                     <button className="primary-button" type="submit" disabled={busy}>保存默认价格</button>
                   </form>
                   <form className="content-card create-form plan-editor" onSubmit={savePlan}>
-                    <div className="card-heading"><div><h2>{editingPlanId ? '编辑套餐' : '添加套餐'}</h2><p>HTTPS 次数、WSS 时长和每人限购次数 -1 表示不限制；订阅时间按天填写，WSS 时长按分钟填写。</p></div></div>
+                    <div className="card-heading"><div><h2>{editingPlanId ? '编辑套餐' : '添加套餐'}</h2><p>订阅的 HTTPS 次数、WSS 时长和每人限购次数可填 -1 表示不限；资源包必须填写有限的非负额度，HTTPS 填 1000 时展示为不限但实际最多 1000 次。订阅时间按天填写，WSS 时长按分钟填写。</p></div></div>
                     <div className="form-grid">
                       <label>套餐名称<input value={planForm.name} onChange={(event) => setPlanForm((current) => ({ ...current, name: event.target.value }))} maxLength={64} required /></label>
-                      <label>类型<select value={planForm.type} onChange={(event) => setPlanForm((current) => ({ ...current, type: event.target.value }))}><option value="subscription">订阅</option><option value="resource">资源包</option></select></label>
+                      <label>类型<select value={planForm.type} onChange={(event) => setPlanForm((current) => ({
+                        ...current,
+                        type: event.target.value,
+                        httpsQuota: event.target.value === 'resource' && Number(current.httpsQuota) < 0 ? '1000' : current.httpsQuota,
+                        wssDurationMinutes: event.target.value === 'resource' && Number(current.wssDurationMinutes) < 0 ? '1000' : current.wssDurationMinutes,
+                      }))}><option value="subscription">订阅</option><option value="resource">资源包</option></select></label>
                       <label>价格（元）<input type="number" min="0" step="0.01" value={planForm.price} onChange={(event) => setPlanForm((current) => ({ ...current, price: event.target.value }))} required /></label>
                       {planForm.type === 'subscription' && <label>持续时间（天）<input type="number" min="1" max="36500" step="1" value={planForm.durationDays} onChange={(event) => setPlanForm((current) => ({ ...current, durationDays: event.target.value }))} required /></label>}
                       {planForm.type === 'subscription' && <label>每人限购次数（-1 不限）<input type="number" min="-1" step="1" value={planForm.purchaseLimit} onChange={(event) => setPlanForm((current) => ({ ...current, purchaseLimit: event.target.value }))} required /></label>}
-                      <label>HTTPS 代理次数<input type="number" min="-1" step="1" value={planForm.httpsQuota} onChange={(event) => setPlanForm((current) => ({ ...current, httpsQuota: event.target.value }))} required /></label>
-                      <label>WSS 时长（分钟）<input type="number" min="-1" step="1" value={planForm.wssDurationMinutes} onChange={(event) => setPlanForm((current) => ({ ...current, wssDurationMinutes: event.target.value }))} required /></label>
+                      <label>HTTPS 代理次数<input type="number" min={planForm.type === 'resource' ? '0' : '-1'} step="1" value={planForm.httpsQuota} onChange={(event) => setPlanForm((current) => ({ ...current, httpsQuota: event.target.value }))} required /></label>
+                      <label>WSS 时长（分钟）<input type="number" min={planForm.type === 'resource' ? '0' : '-1'} step="1" value={planForm.wssDurationMinutes} onChange={(event) => setPlanForm((current) => ({ ...current, wssDurationMinutes: event.target.value }))} required /></label>
                       {planForm.type === 'subscription' && <>
                         <label>套餐外 HTTPS（元/次）<input type="number" min="0" step="0.01" value={planForm.httpsOverage} onChange={(event) => setPlanForm((current) => ({ ...current, httpsOverage: event.target.value }))} required /></label>
                         <label>套餐外 WSS（元/分钟）<input type="number" min="0" step="0.01" value={planForm.wssOverage} onChange={(event) => setPlanForm((current) => ({ ...current, wssOverage: event.target.value }))} required /></label>
@@ -938,7 +955,7 @@ export default function Dashboard({ user, onLogout }) {
                         <tr key={row.id}>
                           <td><div className="table-user"><span className="table-avatar">{row.username.slice(0, 1).toUpperCase()}</span><span>{row.username}<small>ID {row.id}{row.isBanned ? ' · 已封禁' : ''}</small></span></div></td>
                           <td><PermissionTags permissions={row.permissions} /></td>
-                          <td><span>{row.planName || '默认按量计费'}</span><small className="table-secondary">{formatMoney(row.balanceFen)}</small></td>
+                          <td><span>{row.planName || '默认按量计费'}</span><small className="table-secondary">{formatMoney(row.balanceFen)}</small><small className="table-secondary">资源 HTTPS {row.resourceHttpsRemaining} 次 · WSS {formatDuration(row.resourceWssSecondsRemaining)}</small></td>
                           <td><code className="data-preview">{JSON.stringify(row.data)}</code></td>
                           {canModifyUsers && (
                             <td>
@@ -992,7 +1009,7 @@ export default function Dashboard({ user, onLogout }) {
                     <div className="modal-fields">
                       {canChangeEditingUserPassword && <label>设置新密码<input type="password" value={userDraft.password} onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))} placeholder="留空表示不修改" /></label>}
                       {canBanUsers && <label className="modal-checkbox"><input type="checkbox" checked={userDraft.isBanned} onChange={(event) => setUserDraft((current) => ({ ...current, isBanned: event.target.checked }))} />封禁此用户</label>}
-                      {canChangeUserPlan && <label>用户套餐<select value={userDraft.planId} onChange={(event) => setUserDraft((current) => ({ ...current, planId: event.target.value }))}><option value="">默认按量计费</option>{plans?.map((plan) => <option value={plan.id} key={plan.id}>{plan.name}（{plan.type === 'subscription' ? '订阅' : '资源包'}）</option>)}</select></label>}
+                      {canChangeUserPlan && <label>用户套餐<select value={userDraft.planId} onChange={(event) => setUserDraft((current) => ({ ...current, planId: event.target.value }))}><option value="">默认按量计费</option>{plans?.filter((plan) => plan.type === 'subscription').map((plan) => <option value={plan.id} key={plan.id}>{plan.name}（订阅）</option>)}</select></label>}
                       {canChangeBalance && <>
                         <label>设置余额（元）<input type="number" min="0" step="0.01" value={userDraft.balance} onChange={(event) => setUserDraft((current) => ({ ...current, balance: event.target.value }))} required /></label>
                         <label>增加余额（元）<input type="number" min="0" step="0.01" value={userDraft.balanceAdd} onChange={(event) => setUserDraft((current) => ({ ...current, balanceAdd: event.target.value }))} required /></label>

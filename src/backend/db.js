@@ -39,13 +39,15 @@ function hasPermission(user, permission) {
     return Array.isArray(permissions) && permissions.includes(permission);
 }
 
-function calculateWssCharge(plan, usedSeconds, durationSeconds, defaultRate) {
+function calculateWssCharge(plan, usedSeconds, durationSeconds, defaultRate, resourceSeconds = 0) {
     const billableSeconds = Math.ceil(durationSeconds / 60) * 60;
+    const resourceIncludedSeconds = Math.min(billableSeconds, Math.max(0, resourceSeconds));
+    const remainingBillableSeconds = billableSeconds - resourceIncludedSeconds;
     const remainingSeconds = plan && Number(plan.wss_duration_seconds) !== -1
         ? Math.max(0, Number(plan.wss_duration_seconds) - usedSeconds)
-        : billableSeconds;
-    const includedSeconds = plan ? Math.min(billableSeconds, remainingSeconds) : 0;
-    const overageSeconds = billableSeconds - includedSeconds;
+        : remainingBillableSeconds;
+    const includedSeconds = plan ? Math.min(remainingBillableSeconds, remainingSeconds) : 0;
+    const overageSeconds = remainingBillableSeconds - includedSeconds;
     const rate = plan?.type === 'subscription' ? Number(plan.wss_overage_fen) : defaultRate;
     return {
         amountFen: Math.ceil(overageSeconds / 60) * rate,
@@ -137,7 +139,9 @@ class UserDatabase {
                     plan_expires_at INTEGER,
                     plan_https_used INTEGER NOT NULL DEFAULT 0,
                     plan_wss_connections_used INTEGER NOT NULL DEFAULT 0,
-                    plan_wss_seconds_used INTEGER NOT NULL DEFAULT 0
+                    plan_wss_seconds_used INTEGER NOT NULL DEFAULT 0,
+                    resource_https_remaining INTEGER NOT NULL DEFAULT 0,
+                    resource_wss_seconds_remaining INTEGER NOT NULL DEFAULT 0
                 )
             `);
             let userColumns = this.db.pragma('table_info(users)');
@@ -158,6 +162,8 @@ class UserDatabase {
                 ['plan_https_used', 'INTEGER NOT NULL DEFAULT 0'],
                 ['plan_wss_connections_used', 'INTEGER NOT NULL DEFAULT 0'],
                 ['plan_wss_seconds_used', 'INTEGER NOT NULL DEFAULT 0'],
+                ['resource_https_remaining', 'INTEGER NOT NULL DEFAULT 0'],
+                ['resource_wss_seconds_remaining', 'INTEGER NOT NULL DEFAULT 0'],
             ]) {
                 if (!userColumns.some((column) => column.name === name)) {
                     this.db.exec(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
@@ -237,6 +243,7 @@ class UserDatabase {
                 this.db.exec('ALTER TABLE plans ADD COLUMN purchase_limit INTEGER NOT NULL DEFAULT -1');
             }
             this.ensureBillingSettings();
+            await this.migrateLegacyResourcePlans();
             const apiKeyColumns = this.db.pragma('table_info(user_api_keys)');
             if (!apiKeyColumns.some((column) => column.name === 'name')) {
                 this.db.exec("ALTER TABLE user_api_keys ADD COLUMN name TEXT NOT NULL DEFAULT ''");
@@ -285,7 +292,9 @@ class UserDatabase {
                 plan_expires_at BIGINT NULL,
                 plan_https_used BIGINT NOT NULL DEFAULT 0,
                 plan_wss_connections_used BIGINT NOT NULL DEFAULT 0,
-                plan_wss_seconds_used BIGINT NOT NULL DEFAULT 0
+                plan_wss_seconds_used BIGINT NOT NULL DEFAULT 0,
+                resource_https_remaining BIGINT NOT NULL DEFAULT 0,
+                resource_wss_seconds_remaining BIGINT NOT NULL DEFAULT 0
             )
         `);
         const [userColumns] = await this.db.query('SHOW COLUMNS FROM users');
@@ -309,6 +318,8 @@ class UserDatabase {
             ['plan_https_used', 'BIGINT NOT NULL DEFAULT 0'],
             ['plan_wss_connections_used', 'BIGINT NOT NULL DEFAULT 0'],
             ['plan_wss_seconds_used', 'BIGINT NOT NULL DEFAULT 0'],
+            ['resource_https_remaining', 'BIGINT NOT NULL DEFAULT 0'],
+            ['resource_wss_seconds_remaining', 'BIGINT NOT NULL DEFAULT 0'],
         ];
         for (const [name, definition] of migratedUserColumns) {
             if (!userColumns.some((column) => column.Field === name)) {
@@ -349,6 +360,7 @@ class UserDatabase {
             )
         `);
         await this.ensureBillingSettings();
+        await this.migrateLegacyResourcePlans();
         const [settings] = await this.db.execute('SELECT value FROM app_settings WHERE `key` = ?', ['passwords_sha256']);
         if (!settings.length) {
             const connection = await this.db.getConnection();
@@ -466,6 +478,104 @@ class UserDatabase {
             'INSERT IGNORE INTO app_settings (`key`, value) VALUES (?, ?)',
             [key, value],
         )));
+    }
+
+    async migrateLegacyResourcePlans() {
+        if (this.config.type === 'sqlite') {
+            this.db.exec(`
+                UPDATE plans SET https_quota = 1000
+                WHERE type = 'resource' AND https_quota = -1;
+                UPDATE plans SET wss_duration_seconds = 60000
+                WHERE type = 'resource' AND wss_duration_seconds = -1;
+                UPDATE plans SET wss_connection_quota = 0
+                WHERE type = 'resource' AND wss_connection_quota = -1;
+            `);
+            const migrationKey = 'resource_plans_to_user_quotas_v1';
+            if (this.db.prepare('SELECT 1 FROM app_settings WHERE key = ?').get(migrationKey)) return;
+            const migrate = this.db.transaction(() => {
+                const users = this.db.prepare(`
+                    SELECT users.id, users.plan_https_used, users.plan_wss_seconds_used,
+                        plans.https_quota, plans.wss_duration_seconds
+                    FROM users JOIN plans ON plans.id = users.plan_id
+                    WHERE plans.type = 'resource'
+                `).all();
+                const addQuotas = this.db.prepare(`
+                    UPDATE users SET
+                        resource_https_remaining = resource_https_remaining + ?,
+                        resource_wss_seconds_remaining = resource_wss_seconds_remaining + ?,
+                        plan_id = NULL, plan_started_at = NULL, plan_expires_at = NULL,
+                        plan_https_used = 0, plan_wss_connections_used = 0,
+                        plan_wss_seconds_used = 0
+                    WHERE id = ?
+                `);
+                for (const user of users) {
+                    addQuotas.run(
+                        Math.max(0, Number(user.https_quota) - Number(user.plan_https_used)),
+                        Math.max(0, Number(user.wss_duration_seconds) - Number(user.plan_wss_seconds_used)),
+                        user.id,
+                    );
+                }
+                this.db.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?)')
+                    .run(migrationKey, '1');
+            });
+            migrate();
+            return;
+        }
+
+        await this.db.query(`
+            UPDATE plans SET https_quota = 1000
+            WHERE type = 'resource' AND https_quota = -1
+        `);
+        await this.db.query(`
+            UPDATE plans SET wss_duration_seconds = 60000
+            WHERE type = 'resource' AND wss_duration_seconds = -1
+        `);
+        await this.db.query(`
+            UPDATE plans SET wss_connection_quota = 0
+            WHERE type = 'resource' AND wss_connection_quota = -1
+        `);
+        const migrationKey = 'resource_plans_to_user_quotas_v1';
+        const [migrations] = await this.db.execute(
+            'SELECT value FROM app_settings WHERE `key` = ?',
+            [migrationKey],
+        );
+        if (migrations.length) return;
+        const connection = await this.db.getConnection();
+        try {
+            await connection.beginTransaction();
+            const [users] = await connection.execute(`
+                SELECT users.id, users.plan_https_used, users.plan_wss_seconds_used,
+                    plans.https_quota, plans.wss_duration_seconds
+                FROM users JOIN plans ON plans.id = users.plan_id
+                WHERE plans.type = 'resource'
+                FOR UPDATE
+            `);
+            for (const user of users) {
+                await connection.execute(`
+                    UPDATE users SET
+                        resource_https_remaining = resource_https_remaining + ?,
+                        resource_wss_seconds_remaining = resource_wss_seconds_remaining + ?,
+                        plan_id = NULL, plan_started_at = NULL, plan_expires_at = NULL,
+                        plan_https_used = 0, plan_wss_connections_used = 0,
+                        plan_wss_seconds_used = 0
+                    WHERE id = ?
+                `, [
+                    Math.max(0, Number(user.https_quota) - Number(user.plan_https_used)),
+                    Math.max(0, Number(user.wss_duration_seconds) - Number(user.plan_wss_seconds_used)),
+                    user.id,
+                ]);
+            }
+            await connection.execute(
+                'INSERT INTO app_settings (`key`, value) VALUES (?, ?)',
+                [migrationKey, '1'],
+            );
+            await connection.commit();
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
     }
 
     async addPlanPermissionToExistingUsers() {
@@ -599,7 +709,9 @@ class UserDatabase {
                 users.plan_started_at AS planStartedAt, users.plan_expires_at AS planExpiresAt,
                 users.plan_https_used AS planHttpsUsed,
                 users.plan_wss_connections_used AS planWssConnectionsUsed,
-                users.plan_wss_seconds_used AS planWssSecondsUsed
+                users.plan_wss_seconds_used AS planWssSecondsUsed,
+                users.resource_https_remaining AS resourceHttpsRemaining,
+                users.resource_wss_seconds_remaining AS resourceWssSecondsRemaining
             FROM users LEFT JOIN plans ON plans.id = users.plan_id
             WHERE users.id = ?
         `;
@@ -618,6 +730,8 @@ class UserDatabase {
             planHttpsUsed: Number(row.planHttpsUsed ?? 0),
             planWssConnectionsUsed: Number(row.planWssConnectionsUsed ?? 0),
             planWssSecondsUsed: Number(row.planWssSecondsUsed ?? 0),
+            resourceHttpsRemaining: Number(row.resourceHttpsRemaining ?? 0),
+            resourceWssSecondsRemaining: Number(row.resourceWssSecondsRemaining ?? 0),
             data: parseJson(row.data, {}),
             permissions,
         };
@@ -632,7 +746,9 @@ class UserDatabase {
                 users.plan_started_at AS planStartedAt, users.plan_expires_at AS planExpiresAt,
                 users.plan_https_used AS planHttpsUsed,
                 users.plan_wss_connections_used AS planWssConnectionsUsed,
-                users.plan_wss_seconds_used AS planWssSecondsUsed
+                users.plan_wss_seconds_used AS planWssSecondsUsed,
+                users.resource_https_remaining AS resourceHttpsRemaining,
+                users.resource_wss_seconds_remaining AS resourceWssSecondsRemaining
             FROM users LEFT JOIN plans ON plans.id = users.plan_id
             ORDER BY users.id
         `;
@@ -651,6 +767,8 @@ class UserDatabase {
                 planHttpsUsed: Number(row.planHttpsUsed ?? 0),
                 planWssConnectionsUsed: Number(row.planWssConnectionsUsed ?? 0),
                 planWssSecondsUsed: Number(row.planWssSecondsUsed ?? 0),
+                resourceHttpsRemaining: Number(row.resourceHttpsRemaining ?? 0),
+                resourceWssSecondsRemaining: Number(row.resourceWssSecondsRemaining ?? 0),
                 data: parseJson(row.data, {}),
                 permissions,
             };
@@ -702,7 +820,7 @@ class UserDatabase {
             const plan = this.config.type === 'sqlite'
                 ? this.db.prepare(query).get(changes.planId)
                 : (await this.db.execute(query, [changes.planId]))[0][0];
-            if (!plan) return null;
+            if (!plan || plan.type !== 'subscription') return null;
             if (plan.type === 'subscription') planExpiry = Date.now() + Number(plan.duration_seconds) * 1000;
         }
 
@@ -795,7 +913,7 @@ class UserDatabase {
         }
     }
 
-    async listPlans() {
+    async listPlans(userId = null) {
         await this.ready;
         const query = `
             SELECT id, name, type, price_fen AS priceFen,
@@ -803,24 +921,33 @@ class UserDatabase {
                 wss_connection_quota AS wssConnectionQuota,
                 wss_duration_seconds AS wssDurationSeconds,
                 https_overage_fen AS httpsOverageFen, wss_overage_fen AS wssOverageFen,
-                purchase_limit AS purchaseLimit
+                purchase_limit AS purchaseLimit,
+                COALESCE((
+                    SELECT purchase_count FROM plan_purchase_counts
+                    WHERE user_id = ? AND plan_id = plans.id
+                ), 0) AS userPurchaseCount
             FROM plans ORDER BY id
         `;
         const rows = this.config.type === 'sqlite'
-            ? this.db.prepare(query).all()
-            : (await this.db.query(query))[0];
-        return rows.map((plan) => ({
-            ...plan,
-            id: Number(plan.id),
-            priceFen: Number(plan.priceFen),
-            durationSeconds: Number(plan.durationSeconds),
-            httpsQuota: Number(plan.httpsQuota),
-            wssConnectionQuota: Number(plan.wssConnectionQuota),
-            wssDurationSeconds: Number(plan.wssDurationSeconds),
-            httpsOverageFen: Number(plan.httpsOverageFen),
-            wssOverageFen: Number(plan.wssOverageFen),
-            purchaseLimit: Number(plan.purchaseLimit),
-        }));
+            ? this.db.prepare(query).all(userId)
+            : (await this.db.execute(query, [userId]))[0];
+        return rows
+            .filter((plan) => userId === null || plan.type !== 'subscription'
+                || Number(plan.purchaseLimit) === -1
+                || Number(plan.userPurchaseCount) < Number(plan.purchaseLimit))
+            .map((plan) => ({
+                id: Number(plan.id),
+                name: plan.name,
+                type: plan.type,
+                priceFen: Number(plan.priceFen),
+                durationSeconds: Number(plan.durationSeconds),
+                httpsQuota: Number(plan.httpsQuota),
+                wssConnectionQuota: Number(plan.wssConnectionQuota),
+                wssDurationSeconds: Number(plan.wssDurationSeconds),
+                httpsOverageFen: Number(plan.httpsOverageFen),
+                wssOverageFen: Number(plan.wssOverageFen),
+                purchaseLimit: Number(plan.purchaseLimit),
+            }));
     }
 
     async savePlan(plan) {
@@ -956,8 +1083,18 @@ class UserDatabase {
         if (this.config.type === 'sqlite') {
             const purchase = this.db.transaction(() => {
                 const plan = this.db.prepare('SELECT * FROM plans WHERE id = ?').get(planId);
-                const user = this.db.prepare('SELECT balance_fen, permissions FROM users WHERE id = ?').get(userId);
+                const user = this.db.prepare(`
+                    SELECT balance_fen, permissions, resource_https_remaining,
+                        resource_wss_seconds_remaining
+                    FROM users WHERE id = ?
+                `).get(userId);
                 if (!plan || !user || !hasPermission(user, 'user.login')) {
+                    return { success: false, reason: 'unavailable' };
+                }
+                if (plan.type === 'resource'
+                    && (Number(plan.https_quota) < 0
+                        || Number(plan.wss_connection_quota) < 0
+                        || Number(plan.wss_duration_seconds) < 0)) {
                     return { success: false, reason: 'unavailable' };
                 }
                 if (plan.type === 'subscription' && Number(plan.purchase_limit) !== -1) {
@@ -971,6 +1108,31 @@ class UserDatabase {
                 }
                 if (Number(user.balance_fen) < Number(plan.price_fen)) {
                     return { success: false, reason: 'unavailable' };
+                }
+                if (plan.type === 'resource') {
+                    const resourceHttpsRemaining = Number(user.resource_https_remaining)
+                        + Number(plan.https_quota);
+                    const resourceWssSecondsRemaining = Number(user.resource_wss_seconds_remaining)
+                        + Number(plan.wss_duration_seconds);
+                    if (!Number.isSafeInteger(resourceHttpsRemaining)
+                        || !Number.isSafeInteger(resourceWssSecondsRemaining)) {
+                        return { success: false, reason: 'unavailable' };
+                    }
+                    const result = this.db.prepare(`
+                        UPDATE users SET balance_fen = balance_fen - ?,
+                            resource_https_remaining = resource_https_remaining + ?,
+                            resource_wss_seconds_remaining = resource_wss_seconds_remaining + ?
+                        WHERE id = ? AND balance_fen >= ?
+                    `).run(
+                        plan.price_fen,
+                        plan.https_quota,
+                        plan.wss_duration_seconds,
+                        userId,
+                        plan.price_fen,
+                    );
+                    return result.changes === 1
+                        ? { success: true }
+                        : { success: false, reason: 'unavailable' };
                 }
                 const now = Date.now();
                 const expiresAt = plan.type === 'subscription' ? now + Number(plan.duration_seconds) * 1000 : null;
@@ -998,12 +1160,21 @@ class UserDatabase {
             await connection.beginTransaction();
             const [plans] = await connection.execute('SELECT * FROM plans WHERE id = ? FOR UPDATE', [planId]);
             const [users] = await connection.execute(
-                'SELECT balance_fen, permissions FROM users WHERE id = ? FOR UPDATE',
+                `SELECT balance_fen, permissions, resource_https_remaining,
+                    resource_wss_seconds_remaining
+                FROM users WHERE id = ? FOR UPDATE`,
                 [userId],
             );
             const plan = plans[0];
             const user = users[0];
             if (!plan || !user || !hasPermission(user, 'user.login')) {
+                await connection.rollback();
+                return { success: false, reason: 'unavailable' };
+            }
+            if (plan.type === 'resource'
+                && (Number(plan.https_quota) < 0
+                    || Number(plan.wss_connection_quota) < 0
+                    || Number(plan.wss_duration_seconds) < 0)) {
                 await connection.rollback();
                 return { success: false, reason: 'unavailable' };
             }
@@ -1020,6 +1191,35 @@ class UserDatabase {
             if (Number(user.balance_fen) < Number(plan.price_fen)) {
                 await connection.rollback();
                 return { success: false, reason: 'unavailable' };
+            }
+            if (plan.type === 'resource') {
+                const resourceHttpsRemaining = Number(user.resource_https_remaining)
+                    + Number(plan.https_quota);
+                const resourceWssSecondsRemaining = Number(user.resource_wss_seconds_remaining)
+                    + Number(plan.wss_duration_seconds);
+                if (!Number.isSafeInteger(resourceHttpsRemaining)
+                    || !Number.isSafeInteger(resourceWssSecondsRemaining)) {
+                    await connection.rollback();
+                    return { success: false, reason: 'unavailable' };
+                }
+                const [updated] = await connection.execute(`
+                    UPDATE users SET balance_fen = balance_fen - ?,
+                        resource_https_remaining = resource_https_remaining + ?,
+                        resource_wss_seconds_remaining = resource_wss_seconds_remaining + ?
+                    WHERE id = ? AND balance_fen >= ?
+                `, [
+                    plan.price_fen,
+                    plan.https_quota,
+                    plan.wss_duration_seconds,
+                    userId,
+                    plan.price_fen,
+                ]);
+                if (updated.affectedRows !== 1) {
+                    await connection.rollback();
+                    return { success: false, reason: 'unavailable' };
+                }
+                await connection.commit();
+                return { success: true };
             }
             const now = Date.now();
             const expiresAt = plan.type === 'subscription' ? now + Number(plan.duration_seconds) * 1000 : null;
@@ -1200,10 +1400,18 @@ class UserDatabase {
         const charge = (connection) => {
             const user = connection.prepare(`
                 SELECT id, balance_fen, permissions, plan_id, plan_expires_at,
-                    plan_https_used, plan_wss_connections_used, plan_wss_seconds_used
+                    plan_https_used, plan_wss_connections_used, plan_wss_seconds_used,
+                    resource_https_remaining
                 FROM users WHERE id = ?
             `).get(userId);
             if (!user || !hasPermission(user, 'user.login')) return null;
+            if (Number(user.resource_https_remaining) > 0) {
+                const updated = connection.prepare(`
+                    UPDATE users SET resource_https_remaining = resource_https_remaining - 1
+                    WHERE id = ? AND resource_https_remaining > 0
+                `).run(userId);
+                return updated.changes === 1 ? { kind: 'resource', amountFen: 0 } : null;
+            }
             const plan = user.plan_id === null || (user.plan_expires_at !== null
                 && Number(user.plan_expires_at) <= Date.now())
                 ? null
@@ -1236,13 +1444,26 @@ class UserDatabase {
             await connection.beginTransaction();
             const [users] = await connection.execute(`
                 SELECT id, balance_fen, permissions, plan_id, plan_expires_at,
-                    plan_https_used, plan_wss_connections_used, plan_wss_seconds_used
+                    plan_https_used, plan_wss_connections_used, plan_wss_seconds_used,
+                    resource_https_remaining
                 FROM users WHERE id = ? FOR UPDATE
             `, [userId]);
             const user = users[0];
             if (!user || !hasPermission(user, 'user.login')) {
                 await connection.rollback();
                 return null;
+            }
+            if (Number(user.resource_https_remaining) > 0) {
+                const [updated] = await connection.execute(`
+                    UPDATE users SET resource_https_remaining = resource_https_remaining - 1
+                    WHERE id = ? AND resource_https_remaining > 0
+                `, [userId]);
+                if (updated.affectedRows !== 1) {
+                    await connection.rollback();
+                    return null;
+                }
+                await connection.commit();
+                return { kind: 'resource', amountFen: 0 };
             }
             const [plans] = user.plan_id === null || (user.plan_expires_at !== null
                 && Number(user.plan_expires_at) <= Date.now())
@@ -1300,7 +1521,16 @@ class UserDatabase {
 
     async refundHttpsRequest(userId, charge) {
         await this.ready;
-        if (!charge || !['plan', 'balance'].includes(charge.kind)) return false;
+        if (!charge || !['plan', 'resource', 'balance'].includes(charge.kind)) return false;
+        if (charge.kind === 'resource') {
+            const query = `
+                UPDATE users SET resource_https_remaining = resource_https_remaining + 1
+                WHERE id = ?
+            `;
+            return this.config.type === 'sqlite'
+                ? this.db.prepare(query).run(userId).changes === 1
+                : (await this.db.execute(query, [userId]))[0].affectedRows === 1;
+        }
         if (charge.kind === 'plan') {
             const query = `
                 UPDATE users SET plan_https_used = CASE
@@ -1324,7 +1554,8 @@ class UserDatabase {
         await this.ready;
         const userQuery = `
             SELECT balance_fen, permissions, plan_id, plan_expires_at,
-                plan_https_used, plan_wss_connections_used, plan_wss_seconds_used
+                plan_https_used, plan_wss_connections_used, plan_wss_seconds_used,
+                resource_wss_seconds_remaining
             FROM users WHERE id = ?
         `;
         const user = this.config.type === 'sqlite'
@@ -1339,6 +1570,7 @@ class UserDatabase {
             wssDurationSeconds: plan ? Number(plan.wss_duration_seconds) : 0,
             wssOverageFen: plan ? Number(plan.wss_overage_fen) : 0,
             defaultWssPriceFen: rates.wssPriceFen,
+            resourceWssSecondsRemaining: Number(user.resource_wss_seconds_remaining),
             reservedFen: 0,
             reservedSeconds: 0,
         };
@@ -1349,7 +1581,8 @@ class UserDatabase {
         await this.ready;
         const query = `
             SELECT balance_fen, permissions, plan_id, plan_expires_at,
-                plan_wss_connections_used, plan_wss_seconds_used
+                plan_wss_connections_used, plan_wss_seconds_used,
+                resource_wss_seconds_remaining
             FROM users WHERE id = ?
         `;
         const user = this.config.type === 'sqlite'
@@ -1372,6 +1605,7 @@ class UserDatabase {
             Number(user.plan_wss_seconds_used),
             elapsedSeconds,
             usage.defaultWssPriceFen,
+            usage.resourceWssSecondsRemaining,
         ).amountFen;
         const difference = requiredFen - usage.reservedFen;
         if (difference > Number(user.balance_fen)) {
@@ -1416,7 +1650,8 @@ class UserDatabase {
             const transaction = this.db.transaction(() => {
                 const user = this.db.prepare(`
                     SELECT balance_fen, plan_id, plan_expires_at,
-                        plan_wss_connections_used, plan_wss_seconds_used
+                        plan_wss_connections_used, plan_wss_seconds_used,
+                        resource_wss_seconds_remaining
                     FROM users WHERE id = ?
                 `).get(userId);
                 if (!user) return false;
@@ -1430,21 +1665,35 @@ class UserDatabase {
                     wss_duration_seconds: usage.wssDurationSeconds,
                     wss_overage_fen: usage.wssOverageFen,
                 } : null;
+                const resourceUsedSeconds = Math.min(
+                    settledSeconds,
+                    Number(user.resource_wss_seconds_remaining),
+                );
+                const planUsedSeconds = settledSeconds - resourceUsedSeconds;
                 const chargeFen = calculateWssCharge(
                     billingPlan,
                     Number(user.plan_wss_seconds_used),
                     settledSeconds,
                     usage.defaultWssPriceFen,
+                    Number(user.resource_wss_seconds_remaining),
                 ).amountFen;
                 const difference = chargeFen - usage.reservedFen;
                 if (Number(user.balance_fen) < difference) return false;
-                if (difference === 0 && !plan) return true;
+                if (difference === 0 && !plan && resourceUsedSeconds === 0) return true;
                 const update = this.db.prepare(`
                     UPDATE users SET balance_fen = balance_fen - ?,
+                        resource_wss_seconds_remaining = resource_wss_seconds_remaining - ?,
                         plan_wss_connections_used = plan_wss_connections_used + ?,
                         plan_wss_seconds_used = plan_wss_seconds_used + ?
                     WHERE id = ? AND balance_fen >= ?
-                `).run(difference, plan ? 1 : 0, plan ? settledSeconds : 0, userId, Math.max(0, difference));
+                `).run(
+                    difference,
+                    resourceUsedSeconds,
+                    plan && planUsedSeconds > 0 ? 1 : 0,
+                    plan ? planUsedSeconds : 0,
+                    userId,
+                    Math.max(0, difference),
+                );
                 return update.changes === 1;
             });
             return transaction();
@@ -1455,7 +1704,8 @@ class UserDatabase {
             await connection.beginTransaction();
             const [users] = await connection.execute(`
                 SELECT balance_fen, plan_id, plan_expires_at,
-                    plan_wss_connections_used, plan_wss_seconds_used
+                    plan_wss_connections_used, plan_wss_seconds_used,
+                    resource_wss_seconds_remaining
                 FROM users WHERE id = ? FOR UPDATE
             `, [userId]);
             const user = users[0];
@@ -1472,32 +1722,46 @@ class UserDatabase {
                 `, [usage.planId])
                 : [[]];
             const plan = plans[0];
-                const billingPlan = plan ? {
+            const billingPlan = plan ? {
                 type: usage.planType,
                 wss_duration_seconds: usage.wssDurationSeconds,
                 wss_overage_fen: usage.wssOverageFen,
-                } : null;
-                const chargeFen = calculateWssCharge(
+            } : null;
+            const resourceUsedSeconds = Math.min(
+                settledSeconds,
+                Number(user.resource_wss_seconds_remaining),
+            );
+            const planUsedSeconds = settledSeconds - resourceUsedSeconds;
+            const chargeFen = calculateWssCharge(
                 billingPlan,
                 Number(user.plan_wss_seconds_used),
                 settledSeconds,
                 usage.defaultWssPriceFen,
+                Number(user.resource_wss_seconds_remaining),
             ).amountFen;
             const difference = chargeFen - usage.reservedFen;
             if (Number(user.balance_fen) < difference) {
                 await connection.rollback();
                 return false;
             }
-            if (difference === 0 && !plan) {
+            if (difference === 0 && !plan && resourceUsedSeconds === 0) {
                 await connection.commit();
                 return true;
             }
             const [result] = await connection.execute(`
                 UPDATE users SET balance_fen = balance_fen - ?,
+                    resource_wss_seconds_remaining = resource_wss_seconds_remaining - ?,
                     plan_wss_connections_used = plan_wss_connections_used + ?,
                     plan_wss_seconds_used = plan_wss_seconds_used + ?
                 WHERE id = ? AND balance_fen >= ?
-            `, [difference, plan ? 1 : 0, plan ? settledSeconds : 0, userId, Math.max(0, difference)]);
+            `, [
+                difference,
+                resourceUsedSeconds,
+                plan && planUsedSeconds > 0 ? 1 : 0,
+                plan ? planUsedSeconds : 0,
+                userId,
+                Math.max(0, difference),
+            ]);
             if (result.affectedRows !== 1) {
                 await connection.rollback();
                 return false;

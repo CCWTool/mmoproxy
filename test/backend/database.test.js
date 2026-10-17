@@ -41,7 +41,10 @@ legacyFixture.exec(`
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
         permissions JSON NOT NULL DEFAULT '["user.login"]',
-        is_banned INTEGER NOT NULL DEFAULT 0
+        is_banned INTEGER NOT NULL DEFAULT 0,
+        plan_id INTEGER,
+        plan_https_used INTEGER NOT NULL DEFAULT 0,
+        plan_wss_seconds_used INTEGER NOT NULL DEFAULT 0
     );
     INSERT INTO users (username, password, permissions, is_banned) VALUES
         ('legacy-user', 'legacy-password', '["user.login"]', 0),
@@ -59,7 +62,12 @@ legacyFixture.exec(`
         https_overage_fen INTEGER NOT NULL DEFAULT 0,
         wss_overage_fen INTEGER NOT NULL DEFAULT 0
     );
-    INSERT INTO plans (name, type, price_fen) VALUES ('Legacy subscription', 'subscription', 100);
+    INSERT INTO plans (name, type, price_fen) VALUES
+        ('Legacy subscription', 'subscription', 100),
+        ('Legacy resource', 'resource', 100);
+    UPDATE plans SET https_quota = -1, wss_duration_seconds = -1 WHERE type = 'resource';
+    UPDATE users SET plan_id = 2, plan_https_used = 50, plan_wss_seconds_used = 60
+    WHERE username = 'legacy-user';
 `);
 legacyFixture.close();
 process.env.SQLITE_PATH = legacyPath;
@@ -87,9 +95,17 @@ assert.equal((await migratedDb.getUserById(legacyBanned.id)).isBanned, true);
 assert.equal(await migratedDb.login('legacy-banned', 'legacy-banned-password'), null);
 assert.equal(migratedDb.db.prepare('SELECT is_banned FROM users WHERE id = ?').get(legacyBanned.id).is_banned, 0);
 assert.equal(
-    migratedDb.db.prepare('SELECT purchase_limit FROM plans').get().purchase_limit,
+    migratedDb.db.prepare("SELECT purchase_limit FROM plans WHERE type = 'subscription'").get().purchase_limit,
     -1,
 );
+const migratedLegacyUser = await migratedDb.getUserById(
+    migratedDb.db.prepare('SELECT id FROM users WHERE username = ?').get('legacy-user').id,
+);
+assert.equal(migratedLegacyUser.planId, null);
+assert.equal(migratedLegacyUser.resourceHttpsRemaining, 950);
+assert.equal(migratedLegacyUser.resourceWssSecondsRemaining, 59_940);
+assert.equal(migratedDb.db.prepare("SELECT https_quota FROM plans WHERE type = 'resource'").get().https_quota, 1000);
+assert.equal(migratedDb.db.prepare("SELECT wss_duration_seconds FROM plans WHERE type = 'resource'").get().wss_duration_seconds, 60_000);
 process.env.SQLITE_PATH = path.join(directory, 'test.db');
 
 after(() => {
@@ -209,7 +225,7 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
         type: 'resource',
         priceFen: 100,
         durationSeconds: 0,
-        httpsQuota: 0,
+        httpsQuota: 2,
         wssConnectionQuota: 0,
         wssDurationSeconds: 90,
         httpsOverageFen: 0,
@@ -217,12 +233,30 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
     });
     await db.updateAdminUser(user.id, { balanceFen: 1000 });
     assert.deepEqual(await db.purchasePlan(user.id, resourcePlanId), { success: true });
-    assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'balance', amountFen: 14 });
+    let resourceUser = await db.getUserById(user.id);
+    assert.equal(resourceUser.planId, planId);
+    assert.equal(resourceUser.resourceHttpsRemaining, 2);
+    assert.equal(resourceUser.resourceWssSecondsRemaining, 90);
+    const resourceHttpsCharge = await db.chargeHttpsRequest(user.id);
+    assert.deepEqual(resourceHttpsCharge, { kind: 'resource', amountFen: 0 });
+    assert.equal(await db.refundHttpsRequest(user.id, resourceHttpsCharge), true);
+    assert.equal((await db.getUserById(user.id)).resourceHttpsRemaining, 2);
+    assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'resource', amountFen: 0 });
+    assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'resource', amountFen: 0 });
+    assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'balance', amountFen: 25 });
     const resourceUsage = await db.beginWssUsage(user.id);
-    assert.equal(resourceUsage.planId, resourcePlanId);
+    assert.equal(resourceUsage.planId, planId);
     assert.equal(resourceUsage.reservedFen, 0);
-    assert.equal(await db.settleWssUsage(user.id, resourceUsage, 1), true);
-    assert.equal((await db.getUserById(user.id)).balanceFen, 886);
+    assert.equal(await db.settleWssUsage(user.id, resourceUsage, 61), true);
+    resourceUser = await db.getUserById(user.id);
+    assert.equal(resourceUser.balanceFen, 855);
+    assert.equal(resourceUser.resourceWssSecondsRemaining, 29);
+    const remainingResourceUsage = await db.beginWssUsage(user.id);
+    assert.equal(remainingResourceUsage.reservedFen, 20);
+    assert.equal(await db.settleWssUsage(user.id, remainingResourceUsage, 61), true);
+    resourceUser = await db.getUserById(user.id);
+    assert.equal(resourceUser.balanceFen, 815);
+    assert.equal(resourceUser.resourceWssSecondsRemaining, 0);
 
     const limitedPlanId = await db.savePlan({
         id: null,
@@ -244,10 +278,16 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
         reason: 'purchase_limit',
     });
     assert.deepEqual(await db.purchasePlan(user.id, resourcePlanId), { success: true });
+    resourceUser = await db.getUserById(user.id);
+    assert.equal(resourceUser.planId, limitedPlanId);
+    assert.equal(resourceUser.resourceHttpsRemaining, 2);
+    assert.equal(resourceUser.resourceWssSecondsRemaining, 90);
     assert.deepEqual(await db.purchasePlan(user.id, limitedPlanId), {
         success: false,
         reason: 'purchase_limit',
     });
+    assert.equal((await db.listPlans(user.id)).some((plan) => plan.id === limitedPlanId), false);
+    assert.equal((await db.listPlans()).some((plan) => plan.id === limitedPlanId), true);
     assert.equal(db.db.prepare(`
         SELECT purchase_count FROM plan_purchase_counts WHERE user_id = ? AND plan_id = ?
     `).get(user.id, limitedPlanId).purchase_count, 1);
@@ -272,6 +312,43 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
     assert.ok(await db.login('proxy-user', 'password'));
     await db.updateAdminUser(user.id, { planId: null, balanceFen: 0 });
     await db.updateBillingRates(10, 10);
+
+    assert.equal(await db.createUser('capped-resource-user', 'password', ['user.login']), true);
+    const cappedUser = db.db.prepare('SELECT id FROM users WHERE username = ?').get('capped-resource-user');
+    const invalidResourcePlanId = await db.savePlan({
+        id: null,
+        name: 'Invalid resource package',
+        type: 'resource',
+        priceFen: 0,
+        durationSeconds: 0,
+        httpsQuota: -1,
+        wssConnectionQuota: -1,
+        wssDurationSeconds: -1,
+        httpsOverageFen: 0,
+        wssOverageFen: 0,
+    });
+    assert.deepEqual(await db.purchasePlan(cappedUser.id, invalidResourcePlanId), {
+        success: false,
+        reason: 'unavailable',
+    });
+    const cappedResourcePlanId = await db.savePlan({
+        id: null,
+        name: 'Capped resource package',
+        type: 'resource',
+        priceFen: 0,
+        durationSeconds: 0,
+        httpsQuota: 1000,
+        wssConnectionQuota: 0,
+        wssDurationSeconds: 0,
+        httpsOverageFen: 0,
+        wssOverageFen: 0,
+    });
+    assert.deepEqual(await db.purchasePlan(cappedUser.id, cappedResourcePlanId), { success: true });
+    for (let request = 0; request < 1000; request += 1) {
+        assert.deepEqual(await db.chargeHttpsRequest(cappedUser.id), { kind: 'resource', amountFen: 0 });
+    }
+    assert.equal((await db.getUserById(cappedUser.id)).resourceHttpsRemaining, 0);
+    assert.equal(await db.chargeHttpsRequest(cappedUser.id), null);
 });
 
 test('does not restore a revoked migrated administrator permission on restart', async () => {

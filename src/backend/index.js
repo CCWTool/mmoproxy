@@ -141,6 +141,8 @@ app.get('/api/user/profile', async (request, response) => {
             planName: user.planName,
             planType: user.planType,
             planExpiresAt: user.planExpiresAt,
+            resourceHttpsRemaining: user.resourceHttpsRemaining,
+            resourceWssSecondsRemaining: user.resourceWssSecondsRemaining,
             paymentTypes: getPaymentTypes(),
         });
     } catch (error) {
@@ -158,8 +160,11 @@ app.get('/api/admin/plans', async (request, response) => {
         ]);
         if (!user) return;
         response.set('Cache-Control', 'no-store');
+        const hideLimitedPlans = user.permissions.includes('user.plan.read')
+            && !user.permissions.includes('admin.plan')
+            && !user.permissions.includes('admin.users.plan');
         return response.json({
-            plans: await db.listPlans(),
+            plans: await db.listPlans(hideLimitedPlans ? user.id : null),
             rates: await db.getBillingRates(),
             currentPlanId: user.planId,
             currentPlanName: user.planName,
@@ -487,11 +492,16 @@ function parsePlanInput(body) {
     const httpsOverageFen = type === 'subscription' ? yuanToFen(httpsOverage) : 0;
     const wssOverageFen = type === 'subscription' ? yuanToFen(wssOverage) : 0;
     const parsedPurchaseLimit = type === 'subscription' ? (purchaseLimit ?? -1) : -1;
+    const validResourceQuotas = type !== 'resource'
+        || (Number.isSafeInteger(httpsQuota) && httpsQuota >= 0
+            && Number.isSafeInteger(wssDurationMinutes) && wssDurationMinutes >= 0
+            && wssDurationMinutes <= Math.floor(Number.MAX_SAFE_INTEGER / 60));
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 64
         || !['subscription', 'resource'].includes(type)
         || priceFen === null || !validateQuota(httpsQuota)
         || !validateQuota(wssDurationMinutes)
         || (wssDurationMinutes !== -1 && wssDurationMinutes > Math.floor(Number.MAX_SAFE_INTEGER / 60))
+        || !validResourceQuotas
         || (type === 'subscription'
             && (!Number.isSafeInteger(parsedPurchaseLimit) || parsedPurchaseLimit < -1))
         || (type === 'subscription'
@@ -505,7 +515,7 @@ function parsePlanInput(body) {
         priceFen,
         durationSeconds: type === 'subscription' ? durationDays * 86400 : 0,
         httpsQuota,
-        wssConnectionQuota: -1,
+        wssConnectionQuota: type === 'resource' ? 0 : -1,
         wssDurationSeconds: wssDurationMinutes === -1 ? -1 : wssDurationMinutes * 60,
         purchaseLimit: parsedPurchaseLimit,
         httpsOverageFen,
