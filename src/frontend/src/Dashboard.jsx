@@ -101,15 +101,15 @@ const paymentTypeNames = {
 export default function Dashboard({ user, onLogout }) {
   const [section, setSection] = useState('home');
   const [readme, setReadme] = useState('');
-  const [users, setUsers] = useState([]);
-  const [accounts, setAccounts] = useState([]);
-  const [userKeys, setUserKeys] = useState([]);
-  const [profile, setProfile] = useState({ username: user.username, balanceFen: 0 });
+  const [users, setUsers] = useState(null);
+  const [accounts, setAccounts] = useState(null);
+  const [userKeys, setUserKeys] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [rechargeAmount, setRechargeAmount] = useState('10.00');
-  const [paymentTypes, setPaymentTypes] = useState(['alipay']);
-  const [paymentType, setPaymentType] = useState('alipay');
+  const [paymentTypes, setPaymentTypes] = useState(null);
+  const [paymentType, setPaymentType] = useState(null);
   const [voucherCode, setVoucherCode] = useState('');
-  const [configuration, setConfiguration] = useState('');
+  const [configuration, setConfiguration] = useState(null);
   const [voucherAmount, setVoucherAmount] = useState('10.00');
   const [issuedVoucher, setIssuedVoucher] = useState(null);
   const [createdApiKey, setCreatedApiKey] = useState(null);
@@ -142,7 +142,7 @@ export default function Dashboard({ user, onLogout }) {
         .then((userProfile) => {
           setProfile(userProfile);
           setPaymentTypes(userProfile.paymentTypes);
-          setPaymentType(userProfile.paymentTypes[0]);
+          setPaymentType(userProfile.paymentTypes[0] || null);
         })
         .catch((loadError) => setError(loadError.message));
     }
@@ -465,8 +465,8 @@ export default function Dashboard({ user, onLogout }) {
                 <div><p className="page-eyebrow">PERSONAL CENTER</p><h1>个人中心</h1></div>
               </div>
               <div className="account-summary content-card">
-                <div><span>用户名</span><strong>{profile.username}</strong></div>
-                <div><span>余额</span><strong>{formatMoney(profile.balanceFen)}</strong></div>
+                <div><span>用户名</span><strong>{profile?.username ?? '--'}</strong></div>
+                <div><span>余额</span><strong>{profile ? formatMoney(profile.balanceFen) : '--'}</strong></div>
               </div>
               <div className="content-card billing-card">
                 <div className="card-heading"><div><h2>充值</h2><p>支持易支付在线充值，支付成功后余额自动到账。</p></div></div>
@@ -474,14 +474,18 @@ export default function Dashboard({ user, onLogout }) {
                   <label><span>充值金额（元）</span><input type="number" min="1" max="1000000" step="0.01" value={rechargeAmount} onChange={(event) => setRechargeAmount(event.target.value)} required /></label>
                   <fieldset className="payment-methods">
                     <legend>支付方式</legend>
-                    {paymentTypes.map((type) => (
-                      <label className={`payment-method-option${paymentType === type ? ' selected' : ''}`} key={type}>
-                        <input type="radio" name="paymentType" value={type} checked={paymentType === type} onChange={() => setPaymentType(type)} />
-                        <span>{paymentTypeNames[type] || type}</span>
-                      </label>
-                    ))}
+                    {paymentTypes === null
+                      ? <span>--</span>
+                      : paymentTypes.length
+                        ? paymentTypes.map((type) => (
+                          <label className={`payment-method-option${paymentType === type ? ' selected' : ''}`} key={type}>
+                            <input type="radio" name="paymentType" value={type} checked={paymentType === type} onChange={() => setPaymentType(type)} />
+                            <span>{paymentTypeNames[type] || type}</span>
+                          </label>
+                        ))
+                        : <span>暂无可用支付方式</span>}
                   </fieldset>
-                  <button className="primary-button" type="submit" disabled={busy}>确定</button>
+                  <button className="primary-button" type="submit" disabled={busy || !paymentType}>确定</button>
                 </form>
               </div>
               <div className="content-card billing-card">
@@ -501,8 +505,8 @@ export default function Dashboard({ user, onLogout }) {
               </div>
               <form className="content-card configuration-card" onSubmit={saveConfiguration}>
                 <div className="card-heading"><div><h2>.env 配置文件</h2><p>此文件包含敏感凭据，仅有系统设置权限的管理员可查看和修改。</p></div></div>
-                <textarea aria-label=".env 配置文件" spellCheck="false" value={configuration} onChange={(event) => setConfiguration(event.target.value)} />
-                <button className="primary-button" type="submit" disabled={busy}>保存并重载</button>
+                <textarea aria-label=".env 配置文件" spellCheck="false" value={configuration ?? ''} placeholder={configuration === null ? '--' : undefined} disabled={configuration === null} onChange={(event) => setConfiguration(event.target.value)} />
+                <button className="primary-button" type="submit" disabled={busy || configuration === null}>保存并重载</button>
               </form>
               {issuedVoucher && (
                 <div className="key-reveal voucher-reveal" role="status">
@@ -522,7 +526,7 @@ export default function Dashboard({ user, onLogout }) {
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">WEBSOCKET ACCESS</p><h1>密钥管理</h1><p className="page-subtitle">使用密钥通过 Bearer 认证连接 WebSocket 代理。</p></div>
-                <span className="count-pill">{userKeys.length} 个密钥</span>
+                <span className="count-pill">{userKeys === null ? '--' : userKeys.length} 个密钥</span>
               </div>
               {createdApiKey && (
                 <div className="key-reveal" role="status">
@@ -550,7 +554,7 @@ export default function Dashboard({ user, onLogout }) {
                   <button className="primary-button" type="submit" disabled={busy || !newApiKeyName.trim()}>新建密钥</button>
                 </form>
                 <div className="key-list">
-                  {userKeys.map((key) => (
+                  {userKeys?.map((key) => (
                     <div className="key-row" key={key.id}>
                       {editingApiKeyId === key.id ? (
                         <form className="key-rename-form" onSubmit={(event) => renameApiKey(event, key.id)}>
@@ -575,7 +579,8 @@ export default function Dashboard({ user, onLogout }) {
                       </div>
                     </div>
                   ))}
-                  {!userKeys.length && <p className="key-empty">尚未创建密钥。</p>}
+                  {userKeys === null && <p className="key-empty">--</p>}
+                  {userKeys && !userKeys.length && <p className="key-empty">尚未创建密钥。</p>}
                 </div>
               </div>
             </>
@@ -585,7 +590,7 @@ export default function Dashboard({ user, onLogout }) {
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">ACCESS CONTROL</p><h1>用户管理</h1><p className="page-subtitle">查看用户、权限与关联数据。</p></div>
-                <span className="count-pill">{users.length} 位用户</span>
+                <span className="count-pill">{users === null ? '--' : users.length} 位用户</span>
               </div>
               {canEditUsers && (
                 <form className="content-card create-form" onSubmit={createUser}>
@@ -609,7 +614,7 @@ export default function Dashboard({ user, onLogout }) {
                   <table>
                     <thead><tr><th>用户</th><th>权限</th><th>数据</th>{canEditUsers && <th>操作</th>}</tr></thead>
                     <tbody>
-                      {users.map((row) => (
+                      {users?.map((row) => (
                         <tr key={row.id}>
                           <td><div className="table-user"><span className="table-avatar">{row.username.slice(0, 1).toUpperCase()}</span><span>{row.username}<small>ID {row.id}</small></span></div></td>
                           <td><PermissionTags permissions={row.permissions} /></td>
@@ -640,7 +645,8 @@ export default function Dashboard({ user, onLogout }) {
                           )}
                         </tr>
                       ))}
-                      {!users.length && <tr><td className="empty-row" colSpan={canEditUsers ? 4 : 3}>暂无用户。</td></tr>}
+                      {users === null && <tr><td className="empty-row" colSpan={canEditUsers ? 4 : 3}>--</td></tr>}
+                      {users && !users.length && <tr><td className="empty-row" colSpan={canEditUsers ? 4 : 3}>暂无用户。</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -652,7 +658,7 @@ export default function Dashboard({ user, onLogout }) {
             <>
               <div className="page-heading">
                 <div><p className="page-eyebrow">ACCOUNT POOL</p><h1>号池管理</h1><p className="page-subtitle">账号密码不会显示在界面中。</p></div>
-                <span className="count-pill">{accounts.length} 个账号</span>
+                <span className="count-pill">{accounts === null ? '--' : accounts.length} 个账号</span>
               </div>
               {canEditPool && (
                 <form className="content-card create-form" onSubmit={createPoolAccount}>
@@ -673,7 +679,7 @@ export default function Dashboard({ user, onLogout }) {
                   <table>
                     <thead><tr><th>账号 UUID</th><th>用户标识</th><th>状态</th><th>信息</th><th>凭据</th>{canEditPool && <th>操作</th>}</tr></thead>
                     <tbody>
-                      {accounts.map((account) => (
+                      {accounts?.map((account) => (
                         <tr key={account.uuid}>
                           <td><code className="uuid-value">{account.uuid}</code></td>
                           <td>{account.cookieUserId || <span className="empty-note">登录后生成</span>}</td>
@@ -696,7 +702,8 @@ export default function Dashboard({ user, onLogout }) {
                           )}
                         </tr>
                       ))}
-                      {!accounts.length && <tr><td className="empty-row" colSpan={canEditPool ? 6 : 5}>号池暂时没有账号。</td></tr>}
+                      {accounts === null && <tr><td className="empty-row" colSpan={canEditPool ? 6 : 5}>--</td></tr>}
+                      {accounts && !accounts.length && <tr><td className="empty-row" colSpan={canEditPool ? 6 : 5}>号池暂时没有账号。</td></tr>}
                     </tbody>
                   </table>
                 </div>
