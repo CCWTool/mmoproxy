@@ -40,11 +40,13 @@ legacyFixture.exec(`
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
-        permissions JSON NOT NULL DEFAULT '["user.login"]'
+        permissions JSON NOT NULL DEFAULT '["user.login"]',
+        is_banned INTEGER NOT NULL DEFAULT 0
     );
-    INSERT INTO users (username, password, permissions) VALUES
-        ('legacy-user', 'legacy-password', '["user.login"]'),
-        ('legacy-admin', 'legacy-admin-password', '["user.login","admin.users.read","admin.users.edit"]');
+    INSERT INTO users (username, password, permissions, is_banned) VALUES
+        ('legacy-user', 'legacy-password', '["user.login"]', 0),
+        ('legacy-admin', 'legacy-admin-password', '["user.login","admin.users.read","admin.users.edit"]', 0),
+        ('legacy-banned', 'legacy-banned-password', '["user.login","user.plan.read"]', 1);
 `);
 legacyFixture.close();
 process.env.SQLITE_PATH = legacyPath;
@@ -66,6 +68,11 @@ assert.deepEqual((await migratedDb.getUserById(
     'user.login',
     'user.plan.read',
 ].sort());
+const legacyBanned = migratedDb.db.prepare('SELECT id FROM users WHERE username = ?').get('legacy-banned');
+assert.deepEqual((await migratedDb.getUserById(legacyBanned.id)).permissions, ['user.plan.read']);
+assert.equal((await migratedDb.getUserById(legacyBanned.id)).isBanned, true);
+assert.equal(await migratedDb.login('legacy-banned', 'legacy-banned-password'), null);
+assert.equal(migratedDb.db.prepare('SELECT is_banned FROM users WHERE id = ?').get(legacyBanned.id).is_banned, 0);
 process.env.SQLITE_PATH = path.join(directory, 'test.db');
 
 after(() => {
@@ -81,6 +88,7 @@ after(() => {
 });
 
 test('creates an initial administrator with the requested permissions and a SHA-256 password', async () => {
+    assert.equal(db.db.pragma('table_info(users)').some((column) => column.name === 'is_banned'), false);
     const admin = db.db.prepare('SELECT id, username, password, permissions FROM users WHERE username LIKE ?').get('admin-%');
     assert.ok(admin);
     assert.match(admin.password, /^[a-f0-9]{64}$/);
@@ -200,11 +208,19 @@ test('manages plan types, purchases, quota use, overage billing, and user bans',
     assert.equal((await db.getUserById(user.id)).balanceFen, 868);
 
     await db.updateAdminUser(user.id, { isBanned: true });
+    assert.equal((await db.getUserById(user.id)).isBanned, true);
+    assert.equal((await db.getUserById(user.id)).permissions.includes('user.login'), false);
     assert.equal(await db.login('proxy-user', 'password'), null);
     assert.equal(await db.beginWssUsage(user.id), null);
+    assert.equal(await db.chargeHttpsRequest(user.id), null);
+    assert.equal(await db.purchasePlan(user.id, resourcePlanId), false);
     db.db.prepare('INSERT INTO bearer_tokens (`key`, id) VALUES (?, ?)').run('banned-user-token', user.id);
     assert.equal(await db.validateBearerToken('banned-user-token'), null);
+    await db.updateAdminUser(user.id, { permissions: ['user.plan.read'] });
+    assert.equal((await db.getUserById(user.id)).isBanned, true);
     await db.updateAdminUser(user.id, { isBanned: false });
+    assert.equal((await db.getUserById(user.id)).permissions.includes('user.login'), true);
+    assert.equal((await db.getUserById(user.id)).isBanned, false);
     assert.ok(await db.login('proxy-user', 'password'));
     await db.updateAdminUser(user.id, { planId: null, balanceFen: 0 });
     await db.updateBillingRates(10, 10);
@@ -267,6 +283,10 @@ test('creates, rotates, lists, and removes owner-scoped API keys without storing
     assert.notEqual(rotatedKey, created.key);
     assert.equal(await db.validateBearerToken(created.key), null);
     assert.equal(await db.validateBearerToken(rotatedKey), user.id);
+    await db.updateUserPermissions(user.id, ['admin.pool.read']);
+    assert.equal(await db.validateBearerToken(rotatedKey), null);
+    await db.updateUserPermissions(user.id, ['user.login', 'admin.pool.read']);
+    assert.equal(await db.validateBearerToken(rotatedKey), user.id);
 
     assert.equal(await db.deleteUserApiKey(user.id, created.id), true);
     assert.equal(await db.validateBearerToken(rotatedKey), null);
@@ -288,6 +308,10 @@ test('validates bearer keys against their associated user and reads number-pool 
 
     assert.equal(await db.validateBearerToken('proxy-key'), user.id);
     assert.equal(await db.validateBearerToken('unknown-key'), null);
+    await db.updateUserPermissions(user.id, ['admin.pool.read']);
+    assert.equal(await db.validateBearerToken('proxy-key'), null);
+    await db.updateUserPermissions(user.id, ['user.login', 'admin.pool.read']);
+    assert.equal(await db.validateBearerToken('proxy-key'), user.id);
     assert.deepEqual(await db.getRandomNumberPoolEntry(), {
         uuid: 'pool-account-1',
         token: 'cookie-token',

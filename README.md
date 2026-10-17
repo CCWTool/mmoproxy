@@ -72,7 +72,7 @@ DB_TYPE=mysql DB_HOST=localhost DB_PORT=3306 DB_USER=user DB_PASSWORD=password D
 - `admin.users.read`：查看用户列表、权限和用户数据。
 - `admin.users.edit`：仅修改用户密码。
 - `admin.users.permissions`：创建用户、修改用户权限。
-- `admin.users.ban`：封禁和解封用户。
+- `admin.users.ban`：封禁和解封用户（移除或恢复目标用户的 `user.login` 权限）。
 - `admin.users.plan`：修改用户套餐。
 - `admin.users.balance`：设置或增加用户余额。
 - `admin.plan`：添加、编辑、移除套餐和设置默认计费价格。
@@ -82,7 +82,7 @@ DB_TYPE=mysql DB_HOST=localhost DB_PORT=3306 DB_USER=user DB_PASSWORD=password D
 - `user.plan.read`：查看和购买套餐。
 - `user.key`：在左侧密钥管理页面为自己的 WebSocket 密钥命名、重命名、移除和轮换；此权限不允许查看其他用户的密钥。
 
-管理操作会由服务端校验登录会话及对应权限；新注册用户默认拥有 `user.login` 和 `user.plan.read` 权限。左侧个人中心始终显示，包含用户名、余额、易支付充值和兑换码兑换。
+管理操作会由服务端校验登录会话及对应权限；用户管理列表要求 `admin.users.read`，每项修改操作也会单独校验其对应权限。撤销 `user.login` 会立即使已有登录会话和代理令牌失效，并使用户无法继续使用套餐或代理服务；封禁状态由该权限是否存在决定。新注册用户默认拥有 `user.login` 和 `user.plan.read` 权限。左侧个人中心始终显示，包含用户名、余额、易支付充值和兑换码兑换。
 
 ## 套餐与计费
 

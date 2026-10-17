@@ -53,8 +53,10 @@ app.get('/api/auth/session', async (request, response) => {
         const sessionId = getSessionId(request);
         const userId = sessionId ? await validateUserSession(sessionId) : null;
         const user = userId ? await db.getUserById(userId) : null;
+        const authenticated = user
+            && Array.isArray(user.permissions) && user.permissions.includes('user.login');
         response.set('Cache-Control', 'no-store');
-        return response.json({ authenticated: Boolean(user && !user.isBanned), user: user?.isBanned ? null : user });
+        return response.json({ authenticated: Boolean(authenticated), user: authenticated ? user : null });
     } catch (error) {
         console.error('Error validating user session:', error);
         return response.status(500).json({ message: 'Unable to check login status' });
@@ -65,7 +67,7 @@ async function getAuthenticatedUser(request) {
     const sessionId = getSessionId(request);
     const userId = sessionId ? await validateUserSession(sessionId) : null;
     const user = userId ? await db.getUserById(userId) : null;
-    return user && !user.isBanned ? user : null;
+    return user && Array.isArray(user.permissions) && user.permissions.includes('user.login') ? user : null;
 }
 
 async function requirePermissions(request, response, permissions, matchAll = false) {
@@ -113,14 +115,7 @@ app.get('/api/touser', async (_request, response) => {
 
 app.get('/api/admin/users', async (request, response) => {
     try {
-        if (!await requirePermissions(request, response, [
-            'admin.users.read',
-            'admin.users.edit',
-            'admin.users.permissions',
-            'admin.users.ban',
-            'admin.users.plan',
-            'admin.users.balance',
-        ])) return;
+        if (!await requirePermissions(request, response, ['admin.users.read'])) return;
         return response.json({ users: await db.listUsers() });
     } catch (error) {
         console.error('Error listing users:', error);
@@ -386,7 +381,7 @@ app.put('/api/admin/users/:id', async (request, response) => {
             return response.status(400).json({ message: '余额总额超出有效范围。' });
         }
         const changes = { ...input };
-        if (changes.permissions) changes.permissions = [...new Set(['user.login', ...changes.permissions])];
+        if (changes.permissions) changes.permissions = [...new Set(changes.permissions)];
         const updated = await db.updateAdminUser(id, changes);
         if (updated === null) return response.status(404).json({ message: '套餐不存在。' });
         if (!updated) return response.status(404).json({ message: '用户不存在或没有可保存的更改。' });
@@ -406,7 +401,7 @@ app.put('/api/admin/users/:id/permissions', async (request, response) => {
             || permissions.some((permission) => typeof permission !== 'string' || !knownPermissions.includes(permission))) {
             return response.status(400).json({ message: '请提供有效的用户编号和权限列表。' });
         }
-        const success = await db.updateUserPermissions(id, [...new Set(['user.login', ...permissions])]);
+        const success = await db.updateAdminUser(id, { permissions: [...new Set(permissions)] });
         if (!success) return response.status(404).json({ message: '用户不存在。' });
         return response.json({ success: true });
     } catch (error) {

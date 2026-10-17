@@ -184,14 +184,7 @@ export default function Dashboard({ user, onLogout }) {
   const canChangeBalance = user.permissions.includes('admin.users.balance');
   const canManagePlans = user.permissions.includes('admin.plan');
   const canModifyUsers = canChangePassword || canChangePermissions || canBanUsers || canChangeUserPlan || canChangeBalance;
-  const canReadUsers = [
-    'admin.users.read',
-    'admin.users.edit',
-    'admin.users.permissions',
-    'admin.users.ban',
-    'admin.users.plan',
-    'admin.users.balance',
-  ].some((permission) => user.permissions.includes(permission));
+  const canReadUsers = user.permissions.includes('admin.users.read');
   const canReadPool = user.permissions.includes('admin.pool.read') || user.permissions.includes('admin.pool.edit');
   const canEditPool = user.permissions.includes('admin.pool.edit');
   const canManageKeys = user.permissions.includes('user.key');

@@ -34,6 +34,11 @@ function parseJson(value, fallback) {
     }
 }
 
+function hasPermission(user, permission) {
+    const permissions = parseJson(user.permissions, []);
+    return Array.isArray(permissions) && permissions.includes(permission);
+}
+
 function calculateWssCharge(plan, usedConnections, usedSeconds, durationSeconds, defaultRate) {
     const billableSeconds = Math.ceil(durationSeconds / 60) * 60;
     const underConnectionQuota = plan && (
@@ -131,7 +136,6 @@ class UserDatabase {
                     data JSON NOT NULL DEFAULT '{}',
                     permissions JSON NOT NULL DEFAULT '["user.login","user.plan.read"]',
                     balance_fen INTEGER NOT NULL DEFAULT 0,
-                    is_banned INTEGER NOT NULL DEFAULT 0,
                     plan_id INTEGER,
                     plan_started_at INTEGER,
                     plan_expires_at INTEGER,
@@ -152,7 +156,6 @@ class UserDatabase {
             }
             userColumns = this.db.pragma('table_info(users)');
             for (const [name, definition] of [
-                ['is_banned', 'INTEGER NOT NULL DEFAULT 0'],
                 ['plan_id', 'INTEGER'],
                 ['plan_started_at', 'INTEGER'],
                 ['plan_expires_at', 'INTEGER'],
@@ -240,6 +243,7 @@ class UserDatabase {
                 this.db.exec("ALTER TABLE number_pool ADD COLUMN validation_info TEXT NOT NULL DEFAULT ''");
             }
             await this.addPlanPermissionToExistingUsers();
+            await this.migrateLegacyBans();
             const passwordMigration = this.db.prepare(
                 'SELECT value FROM app_settings WHERE key = ?',
             ).get('passwords_sha256');
@@ -264,7 +268,6 @@ class UserDatabase {
                 data JSON NOT NULL,
                 permissions JSON NOT NULL,
                 balance_fen BIGINT NOT NULL DEFAULT 0,
-                is_banned BOOLEAN NOT NULL DEFAULT FALSE,
                 plan_id INT UNSIGNED NULL,
                 plan_started_at BIGINT NULL,
                 plan_expires_at BIGINT NULL,
@@ -288,7 +291,6 @@ class UserDatabase {
             await this.db.query('ALTER TABLE users ADD COLUMN balance_fen BIGINT NOT NULL DEFAULT 0');
         }
         const migratedUserColumns = [
-            ['is_banned', 'BOOLEAN NOT NULL DEFAULT FALSE'],
             ['plan_id', 'INT UNSIGNED NULL'],
             ['plan_started_at', 'BIGINT NULL'],
             ['plan_expires_at', 'BIGINT NULL'],
@@ -417,6 +419,7 @@ class UserDatabase {
             await this.db.query('ALTER TABLE number_pool ADD COLUMN validation_info TEXT NULL');
         }
         await this.addPlanPermissionToExistingUsers();
+        await this.migrateLegacyBans();
         await this.ensureInitialAdmin();
     }
 
@@ -481,6 +484,29 @@ class UserDatabase {
         }
     }
 
+    async migrateLegacyBans() {
+        const hasLegacyBanColumn = this.config.type === 'sqlite'
+            ? this.db.pragma('table_info(users)').some((column) => column.name === 'is_banned')
+            : (await this.db.query('SHOW COLUMNS FROM users'))[0].some((column) => column.Field === 'is_banned');
+        if (!hasLegacyBanColumn) return;
+
+        const query = 'SELECT id, permissions FROM users WHERE is_banned = 1';
+        const users = this.config.type === 'sqlite'
+            ? this.db.prepare(query).all()
+            : (await this.db.query(query))[0];
+        for (const user of users) {
+            const permissions = new Set(parseJson(user.permissions, []));
+            permissions.delete('user.login');
+            const updateQuery = 'UPDATE users SET permissions = ?, is_banned = 0 WHERE id = ?';
+            const params = [JSON.stringify([...permissions]), user.id];
+            if (this.config.type === 'sqlite') {
+                this.db.prepare(updateQuery).run(...params);
+            } else {
+                await this.db.execute(updateQuery, params);
+            }
+        }
+    }
+
     async ensureInitialAdmin() {
         const countQuery = 'SELECT COUNT(*) AS count FROM users';
         const count = this.config.type === 'sqlite'
@@ -506,12 +532,12 @@ class UserDatabase {
 
     async login(user, pass) {
         await this.ready;
-        const query = 'SELECT id, username, permissions FROM users WHERE username = ? AND password = ? AND is_banned = 0';
+        const query = 'SELECT id, username, permissions FROM users WHERE username = ? AND password = ?';
         const params = [user, hashPassword(pass)];
         const row = this.config.type === 'sqlite'
             ? this.db.prepare(query).get(...params)
             : (await this.db.execute(query, params))[0][0];
-        if (!row || !parseJson(row.permissions, []).includes('user.login')) return null;
+        if (!row || !hasPermission(row, 'user.login')) return null;
         const sessionId = await createUserSession(row.id);
         return { id: row.id, username: row.username, sessionId };
     }
@@ -539,7 +565,7 @@ class UserDatabase {
         await this.ready;
         const query = `
             SELECT users.id, users.username, users.data, users.permissions,
-                users.balance_fen AS balanceFen, users.is_banned AS isBanned,
+                users.balance_fen AS balanceFen,
                 users.plan_id AS planId, plans.name AS planName, plans.type AS planType,
                 users.plan_started_at AS planStartedAt, users.plan_expires_at AS planExpiresAt,
                 users.plan_https_used AS planHttpsUsed,
@@ -551,10 +577,12 @@ class UserDatabase {
         const row = this.config.type === 'sqlite'
             ? this.db.prepare(query).get(id)
             : (await this.db.execute(query, [id]))[0][0];
-        return row ? {
+        if (!row) return null;
+        const permissions = parseJson(row.permissions, []);
+        return {
             ...row,
             balanceFen: Number(row.balanceFen ?? 0),
-            isBanned: Boolean(row.isBanned),
+            isBanned: !hasPermission({ permissions }, 'user.login'),
             planId: row.planId === null ? null : Number(row.planId),
             planStartedAt: row.planStartedAt === null ? null : Number(row.planStartedAt),
             planExpiresAt: row.planExpiresAt === null ? null : Number(row.planExpiresAt),
@@ -562,15 +590,15 @@ class UserDatabase {
             planWssConnectionsUsed: Number(row.planWssConnectionsUsed ?? 0),
             planWssSecondsUsed: Number(row.planWssSecondsUsed ?? 0),
             data: parseJson(row.data, {}),
-            permissions: parseJson(row.permissions, []),
-        } : null;
+            permissions,
+        };
     }
 
     async listUsers() {
         await this.ready;
         const query = `
             SELECT users.id, users.username, users.data, users.permissions,
-                users.balance_fen AS balanceFen, users.is_banned AS isBanned,
+                users.balance_fen AS balanceFen,
                 users.plan_id AS planId, plans.name AS planName, plans.type AS planType,
                 users.plan_started_at AS planStartedAt, users.plan_expires_at AS planExpiresAt,
                 users.plan_https_used AS planHttpsUsed,
@@ -582,19 +610,22 @@ class UserDatabase {
         const rows = this.config.type === 'sqlite'
             ? this.db.prepare(query).all()
             : (await this.db.query(query))[0];
-        return rows.map((row) => ({
-            ...row,
-            balanceFen: Number(row.balanceFen ?? 0),
-            isBanned: Boolean(row.isBanned),
-            planId: row.planId === null ? null : Number(row.planId),
-            planStartedAt: row.planStartedAt === null ? null : Number(row.planStartedAt),
-            planExpiresAt: row.planExpiresAt === null ? null : Number(row.planExpiresAt),
-            planHttpsUsed: Number(row.planHttpsUsed ?? 0),
-            planWssConnectionsUsed: Number(row.planWssConnectionsUsed ?? 0),
-            planWssSecondsUsed: Number(row.planWssSecondsUsed ?? 0),
-            data: parseJson(row.data, {}),
-            permissions: parseJson(row.permissions, []),
-        }));
+        return rows.map((row) => {
+            const permissions = parseJson(row.permissions, []);
+            return {
+                ...row,
+                balanceFen: Number(row.balanceFen ?? 0),
+                isBanned: !hasPermission({ permissions }, 'user.login'),
+                planId: row.planId === null ? null : Number(row.planId),
+                planStartedAt: row.planStartedAt === null ? null : Number(row.planStartedAt),
+                planExpiresAt: row.planExpiresAt === null ? null : Number(row.planExpiresAt),
+                planHttpsUsed: Number(row.planHttpsUsed ?? 0),
+                planWssConnectionsUsed: Number(row.planWssConnectionsUsed ?? 0),
+                planWssSecondsUsed: Number(row.planWssSecondsUsed ?? 0),
+                data: parseJson(row.data, {}),
+                permissions,
+            };
+        });
     }
 
     async createUser(username, password, permissions) {
@@ -648,17 +679,10 @@ class UserDatabase {
 
         const assignments = [];
         const values = [];
-        if (Object.hasOwn(changes, 'permissions')) {
-            assignments.push('permissions = ?');
-            values.push(JSON.stringify(changes.permissions));
-        }
+        const changesPermissions = Object.hasOwn(changes, 'permissions') || Object.hasOwn(changes, 'isBanned');
         if (Object.hasOwn(changes, 'password')) {
             assignments.push('password = ?');
             values.push(hashPassword(changes.password));
-        }
-        if (Object.hasOwn(changes, 'isBanned')) {
-            assignments.push('is_banned = ?');
-            values.push(changes.isBanned ? 1 : 0);
         }
         if (Object.hasOwn(changes, 'planId')) {
             assignments.push(
@@ -681,21 +705,57 @@ class UserDatabase {
             assignments.push('balance_fen = balance_fen + ?');
             values.push(changes.balanceDeltaFen);
         }
-        if (!assignments.length) return false;
+        if (!assignments.length && !changesPermissions) return false;
 
-        const query = `UPDATE users SET ${assignments.join(', ')} WHERE id = ?`;
+        const updateUser = (currentPermissions, execute) => {
+            const nextAssignments = [...assignments];
+            const nextValues = [...values];
+            if (changesPermissions) {
+                const permissions = new Set(
+                    Object.hasOwn(changes, 'permissions') ? changes.permissions : currentPermissions,
+                );
+                const canLogin = Object.hasOwn(changes, 'isBanned')
+                    ? !changes.isBanned
+                    : hasPermission({ permissions: currentPermissions }, 'user.login');
+                if (canLogin) permissions.add('user.login');
+                else permissions.delete('user.login');
+                nextAssignments.push('permissions = ?');
+                nextValues.push(JSON.stringify([...permissions]));
+            }
+            const query = `UPDATE users SET ${nextAssignments.join(', ')} WHERE id = ?`;
+            return execute(query, [...nextValues, id]);
+        };
+
         if (this.config.type === 'sqlite') {
-            return this.db.prepare(query).run(...values, id).changes === 1;
+            const update = this.db.transaction(() => {
+                let currentPermissions = [];
+                if (changesPermissions) {
+                    const user = this.db.prepare('SELECT permissions FROM users WHERE id = ?').get(id);
+                    if (!user) return false;
+                    currentPermissions = parseJson(user.permissions, []);
+                }
+                return updateUser(
+                    currentPermissions,
+                    (query, params) => this.db.prepare(query).run(...params).changes === 1,
+                );
+            });
+            return update();
         }
         const connection = await this.db.getConnection();
         try {
             await connection.beginTransaction();
-            const [userRows] = await connection.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [id]);
+            const [userRows] = await connection.execute(
+                'SELECT id, permissions FROM users WHERE id = ? FOR UPDATE',
+                [id],
+            );
             if (!userRows.length) {
                 await connection.rollback();
                 return false;
             }
-            const [result] = await connection.execute(query, [...values, id]);
+            const [result] = await updateUser(
+                parseJson(userRows[0].permissions, []),
+                (query, params) => connection.execute(query, params),
+            );
             await connection.commit();
             return result.affectedRows === 1 || userRows.length === 1;
         } catch (error) {
@@ -864,8 +924,8 @@ class UserDatabase {
         if (this.config.type === 'sqlite') {
             const purchase = this.db.transaction(() => {
                 const plan = this.db.prepare('SELECT * FROM plans WHERE id = ?').get(planId);
-                const user = this.db.prepare('SELECT balance_fen, is_banned FROM users WHERE id = ?').get(userId);
-                if (!plan || !user || user.is_banned) return false;
+                const user = this.db.prepare('SELECT balance_fen, permissions FROM users WHERE id = ?').get(userId);
+                if (!plan || !user || !hasPermission(user, 'user.login')) return false;
                 if (Number(user.balance_fen) < Number(plan.price_fen)) return false;
                 const now = Date.now();
                 const expiresAt = plan.type === 'subscription' ? now + Number(plan.duration_seconds) * 1000 : null;
@@ -873,7 +933,7 @@ class UserDatabase {
                     UPDATE users SET balance_fen = balance_fen - ?, plan_id = ?,
                         plan_started_at = ?, plan_expires_at = ?, plan_https_used = 0,
                         plan_wss_connections_used = 0, plan_wss_seconds_used = 0
-                    WHERE id = ? AND is_banned = 0 AND balance_fen >= ?
+                    WHERE id = ? AND balance_fen >= ?
                 `).run(plan.price_fen, planId, now, expiresAt, userId, plan.price_fen);
                 return result.changes === 1;
             });
@@ -884,12 +944,13 @@ class UserDatabase {
             await connection.beginTransaction();
             const [plans] = await connection.execute('SELECT * FROM plans WHERE id = ? FOR UPDATE', [planId]);
             const [users] = await connection.execute(
-                'SELECT balance_fen, is_banned FROM users WHERE id = ? FOR UPDATE',
+                'SELECT balance_fen, permissions FROM users WHERE id = ? FOR UPDATE',
                 [userId],
             );
             const plan = plans[0];
             const user = users[0];
-            if (!plan || !user || user.is_banned || Number(user.balance_fen) < Number(plan.price_fen)) {
+            if (!plan || !user || !hasPermission(user, 'user.login')
+                || Number(user.balance_fen) < Number(plan.price_fen)) {
                 await connection.rollback();
                 return false;
             }
@@ -899,7 +960,7 @@ class UserDatabase {
                 UPDATE users SET balance_fen = balance_fen - ?, plan_id = ?,
                     plan_started_at = ?, plan_expires_at = ?, plan_https_used = 0,
                     plan_wss_connections_used = 0, plan_wss_seconds_used = 0
-                WHERE id = ? AND is_banned = 0 AND balance_fen >= ?
+                WHERE id = ? AND balance_fen >= ?
             `, [plan.price_fen, planId, now, expiresAt, userId, plan.price_fen]);
             if (updated.affectedRows !== 1) {
                 await connection.rollback();
@@ -1064,11 +1125,11 @@ class UserDatabase {
         await this.ready;
         const charge = (connection) => {
             const user = connection.prepare(`
-                SELECT id, balance_fen, is_banned, plan_id, plan_expires_at,
+                SELECT id, balance_fen, permissions, plan_id, plan_expires_at,
                     plan_https_used, plan_wss_connections_used, plan_wss_seconds_used
                 FROM users WHERE id = ?
             `).get(userId);
-            if (!user || user.is_banned) return null;
+            if (!user || !hasPermission(user, 'user.login')) return null;
             const plan = user.plan_id === null || (user.plan_expires_at !== null
                 && Number(user.plan_expires_at) <= Date.now())
                 ? null
@@ -1088,7 +1149,7 @@ class UserDatabase {
             if (Number(user.balance_fen) < rate) return null;
             if (rate === 0) return { kind: 'balance', amountFen: 0 };
             const updated = connection.prepare(
-                'UPDATE users SET balance_fen = balance_fen - ? WHERE id = ? AND balance_fen >= ? AND is_banned = 0',
+                'UPDATE users SET balance_fen = balance_fen - ? WHERE id = ? AND balance_fen >= ?',
             ).run(rate, userId, rate);
             return updated.changes === 1 ? { kind: 'balance', amountFen: rate } : null;
         };
@@ -1100,12 +1161,12 @@ class UserDatabase {
         try {
             await connection.beginTransaction();
             const [users] = await connection.execute(`
-                SELECT id, balance_fen, is_banned, plan_id, plan_expires_at,
+                SELECT id, balance_fen, permissions, plan_id, plan_expires_at,
                     plan_https_used, plan_wss_connections_used, plan_wss_seconds_used
                 FROM users WHERE id = ? FOR UPDATE
             `, [userId]);
             const user = users[0];
-            if (!user || user.is_banned) {
+            if (!user || !hasPermission(user, 'user.login')) {
                 await connection.rollback();
                 return null;
             }
@@ -1135,7 +1196,7 @@ class UserDatabase {
                 return { kind: 'balance', amountFen: 0 };
             }
             const [result] = await connection.execute(
-                'UPDATE users SET balance_fen = balance_fen - ? WHERE id = ? AND balance_fen >= ? AND is_banned = 0',
+                'UPDATE users SET balance_fen = balance_fen - ? WHERE id = ? AND balance_fen >= ?',
                 [rate, userId, rate],
             );
             if (result.affectedRows !== 1) {
@@ -1188,14 +1249,14 @@ class UserDatabase {
     async beginWssUsage(userId) {
         await this.ready;
         const userQuery = `
-            SELECT balance_fen, is_banned, plan_id, plan_expires_at,
+            SELECT balance_fen, permissions, plan_id, plan_expires_at,
                 plan_https_used, plan_wss_connections_used, plan_wss_seconds_used
             FROM users WHERE id = ?
         `;
         const user = this.config.type === 'sqlite'
             ? this.db.prepare(userQuery).get(userId)
             : (await this.db.execute(userQuery, [userId]))[0][0];
-        if (!user || user.is_banned) return null;
+        if (!user || !hasPermission(user, 'user.login')) return null;
         const plan = await this.getActivePlanForUser(user);
         const rates = await this.getBillingRates();
         const usage = {
@@ -1214,14 +1275,14 @@ class UserDatabase {
     async canContinueWssUsage(userId, usage, elapsedSeconds) {
         await this.ready;
         const query = `
-            SELECT balance_fen, is_banned, plan_id, plan_expires_at,
+            SELECT balance_fen, permissions, plan_id, plan_expires_at,
                 plan_wss_connections_used, plan_wss_seconds_used
             FROM users WHERE id = ?
         `;
         const user = this.config.type === 'sqlite'
             ? this.db.prepare(query).get(userId)
             : (await this.db.execute(query, [userId]))[0][0];
-        if (!user || user.is_banned) {
+        if (!user || !hasPermission(user, 'user.login')) {
             usage.maximumSeconds = usage.reservedSeconds;
             return false;
         }
@@ -1283,7 +1344,7 @@ class UserDatabase {
         const settleSqlite = () => {
             const transaction = this.db.transaction(() => {
                 const user = this.db.prepare(`
-                    SELECT balance_fen, is_banned, plan_id, plan_expires_at,
+                    SELECT balance_fen, plan_id, plan_expires_at,
                         plan_wss_connections_used, plan_wss_seconds_used
                     FROM users WHERE id = ?
                 `).get(userId);
@@ -1324,7 +1385,7 @@ class UserDatabase {
         try {
             await connection.beginTransaction();
             const [users] = await connection.execute(`
-                SELECT balance_fen, is_banned, plan_id, plan_expires_at,
+                SELECT balance_fen, plan_id, plan_expires_at,
                     plan_wss_connections_used, plan_wss_seconds_used
                 FROM users WHERE id = ? FOR UPDATE
             `, [userId]);
@@ -1527,25 +1588,22 @@ class UserDatabase {
     async validateBearerToken(key) {
         await this.ready;
         const query = `
-            SELECT user_api_keys.user_id AS id
+            SELECT user_api_keys.user_id AS id, users.permissions
             FROM user_api_keys
             INNER JOIN users ON users.id = user_api_keys.user_id
-            WHERE user_api_keys.key_hash = ? AND users.is_banned = 0
+            WHERE user_api_keys.key_hash = ?
             UNION ALL
-            SELECT bearer_tokens.id
+            SELECT bearer_tokens.id, users.permissions
             FROM bearer_tokens
             INNER JOIN users ON users.id = bearer_tokens.id
-            WHERE bearer_tokens.\`key\` = ? AND users.is_banned = 0
-            LIMIT 1
+            WHERE bearer_tokens.\`key\` = ?
         `;
         const params = [hashPassword(key), key];
 
-        if (this.config.type === 'sqlite') {
-            return this.db.prepare(query).get(...params)?.id ?? null;
-        }
-
-        const [rows] = await this.db.execute(query, params);
-        return rows[0]?.id ?? null;
+        const rows = this.config.type === 'sqlite'
+            ? this.db.prepare(query).all(...params)
+            : (await this.db.execute(query, params))[0];
+        return rows.find((row) => hasPermission(row, 'user.login'))?.id ?? null;
     }
 
     async getRandomNumberPoolEntry() {
