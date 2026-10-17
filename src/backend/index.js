@@ -34,6 +34,7 @@ app.use((request, response, next) => {
     if (isCorsPreflightRequest(request)) return response.status(204).end();
     return next();
 });
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -53,7 +54,7 @@ app.get('/api/auth/session', async (request, response) => {
         const userId = sessionId ? await validateUserSession(sessionId) : null;
         const user = userId ? await db.getUserById(userId) : null;
         response.set('Cache-Control', 'no-store');
-        return response.json({ authenticated: Boolean(user), user });
+        return response.json({ authenticated: Boolean(user && !user.isBanned), user: user?.isBanned ? null : user });
     } catch (error) {
         console.error('Error validating user session:', error);
         return response.status(500).json({ message: 'Unable to check login status' });
@@ -63,7 +64,8 @@ app.get('/api/auth/session', async (request, response) => {
 async function getAuthenticatedUser(request) {
     const sessionId = getSessionId(request);
     const userId = sessionId ? await validateUserSession(sessionId) : null;
-    return userId ? db.getUserById(userId) : null;
+    const user = userId ? await db.getUserById(userId) : null;
+    return user && !user.isBanned ? user : null;
 }
 
 async function requirePermissions(request, response, permissions, matchAll = false) {
@@ -90,6 +92,14 @@ function validateApiKeyName(name) {
     return typeof name === 'string' && name.trim().length > 0 && name.trim().length <= 64;
 }
 
+function validateQuota(value) {
+    return Number.isSafeInteger(value) && value >= -1;
+}
+
+function validateFen(value) {
+    return Number.isSafeInteger(value) && value >= 0;
+}
+
 app.get('/api/touser', async (_request, response) => {
     try {
         const documentation = await readFile(path.resolve(process.cwd(), 'TOUSER.md'), 'utf8');
@@ -103,7 +113,14 @@ app.get('/api/touser', async (_request, response) => {
 
 app.get('/api/admin/users', async (request, response) => {
     try {
-        if (!await requirePermissions(request, response, ['admin.users.read', 'admin.users.edit'])) return;
+        if (!await requirePermissions(request, response, [
+            'admin.users.read',
+            'admin.users.edit',
+            'admin.users.permissions',
+            'admin.users.ban',
+            'admin.users.plan',
+            'admin.users.balance',
+        ])) return;
         return response.json({ users: await db.listUsers() });
     } catch (error) {
         console.error('Error listing users:', error);
@@ -119,11 +136,54 @@ app.get('/api/user/profile', async (request, response) => {
         return response.json({
             username: user.username,
             balanceFen: user.balanceFen,
+            planId: user.planId,
+            planName: user.planName,
+            planType: user.planType,
+            planExpiresAt: user.planExpiresAt,
             paymentTypes: getPaymentTypes(),
         });
     } catch (error) {
         console.error('Error reading user profile:', error);
         return response.status(500).json({ message: '无法读取个人中心信息。' });
+    }
+});
+
+app.get('/api/admin/plans', async (request, response) => {
+    try {
+        const user = await requirePermissions(request, response, [
+            'admin.plan',
+            'admin.users.plan',
+            'user.plan.read',
+        ]);
+        if (!user) return;
+        response.set('Cache-Control', 'no-store');
+        return response.json({
+            plans: await db.listPlans(),
+            rates: await db.getBillingRates(),
+            currentPlanId: user.planId,
+            currentPlanName: user.planName,
+            currentPlanExpiresAt: user.planExpiresAt,
+        });
+    } catch (error) {
+        console.error('Error listing plans:', error);
+        return response.status(500).json({ message: '无法读取套餐列表。' });
+    }
+});
+
+app.post('/api/user/plans/:id/purchase', async (request, response) => {
+    try {
+        const user = await requirePermissions(request, response, ['user.plan.read']);
+        if (!user) return;
+        const planId = Number(request.params.id);
+        if (!Number.isSafeInteger(planId) || planId < 1) {
+            return response.status(400).json({ message: '套餐编号无效。' });
+        }
+        const purchased = await db.purchasePlan(user.id, planId);
+        if (!purchased) return response.status(400).json({ message: '套餐不存在、余额不足或账户已封禁。' });
+        return response.json({ success: true });
+    } catch (error) {
+        console.error('Error purchasing plan:', error);
+        return response.status(500).json({ message: '无法购买套餐。' });
     }
 });
 
@@ -254,7 +314,7 @@ app.post('/api/admin/vouchers', async (request, response) => {
 
 app.post('/api/admin/users', async (request, response) => {
     try {
-        if (!await requirePermissions(request, response, ['admin.users.edit'])) return;
+        if (!await requirePermissions(request, response, ['admin.users.permissions'])) return;
         const { username, password, permissions } = request.body ?? {};
         if (typeof username !== 'string' || !username.trim() || username.trim().length > 64
             || !validatePassword(password) || !Array.isArray(permissions)
@@ -274,9 +334,72 @@ app.post('/api/admin/users', async (request, response) => {
     }
 });
 
+app.put('/api/admin/users/:id', async (request, response) => {
+    try {
+        const actor = await getAuthenticatedUser(request);
+        if (!actor) return response.status(401).json({ message: '请先登录。' });
+        const id = Number(request.params.id);
+        const input = request.body ?? {};
+        const allowedFields = new Set(['permissions', 'password', 'isBanned', 'planId', 'balanceFen', 'balanceDeltaFen']);
+        if (!Number.isSafeInteger(id) || id < 1
+            || !input || typeof input !== 'object' || Array.isArray(input)
+            || !Object.keys(input).length
+            || Object.keys(input).some((key) => !allowedFields.has(key))) {
+            return response.status(400).json({ message: '请提供有效的用户编号和修改内容。' });
+        }
+
+        const permissionRequirements = {
+            permissions: 'admin.users.permissions',
+            password: 'admin.users.edit',
+            isBanned: 'admin.users.ban',
+            planId: 'admin.users.plan',
+            balanceFen: 'admin.users.balance',
+            balanceDeltaFen: 'admin.users.balance',
+        };
+        if (Object.keys(input).some((key) => !actor.permissions.includes(permissionRequirements[key]))) {
+            return response.status(403).json({ message: '你没有修改这些用户信息的权限。' });
+        }
+        if (Object.hasOwn(input, 'permissions')
+            && (!Array.isArray(input.permissions)
+                || input.permissions.some((permission) => typeof permission !== 'string'
+                    || !knownPermissions.includes(permission)))) {
+            return response.status(400).json({ message: '权限列表无效。' });
+        }
+        if (Object.hasOwn(input, 'password') && !validatePassword(input.password)) {
+            return response.status(400).json({ message: '密码无效。' });
+        }
+        if (Object.hasOwn(input, 'isBanned') && typeof input.isBanned !== 'boolean') {
+            return response.status(400).json({ message: '封禁状态无效。' });
+        }
+        if (Object.hasOwn(input, 'planId') && input.planId !== null
+            && (!Number.isSafeInteger(input.planId) || input.planId < 1)) {
+            return response.status(400).json({ message: '套餐编号无效。' });
+        }
+        if (Object.hasOwn(input, 'balanceFen') && !validateFen(input.balanceFen)) {
+            return response.status(400).json({ message: '余额金额无效。' });
+        }
+        if (Object.hasOwn(input, 'balanceDeltaFen') && !validateFen(input.balanceDeltaFen)) {
+            return response.status(400).json({ message: '余额增加金额无效。' });
+        }
+        if (Object.hasOwn(input, 'balanceFen') && Object.hasOwn(input, 'balanceDeltaFen')
+            && !Number.isSafeInteger(input.balanceFen + input.balanceDeltaFen)) {
+            return response.status(400).json({ message: '余额总额超出有效范围。' });
+        }
+        const changes = { ...input };
+        if (changes.permissions) changes.permissions = [...new Set(['user.login', ...changes.permissions])];
+        const updated = await db.updateAdminUser(id, changes);
+        if (updated === null) return response.status(404).json({ message: '套餐不存在。' });
+        if (!updated) return response.status(404).json({ message: '用户不存在或没有可保存的更改。' });
+        return response.json({ success: true });
+    } catch (error) {
+        console.error('Error updating user:', error);
+        return response.status(500).json({ message: '无法更新用户信息。' });
+    }
+});
+
 app.put('/api/admin/users/:id/permissions', async (request, response) => {
     try {
-        if (!await requirePermissions(request, response, ['admin.users.edit'])) return;
+        if (!await requirePermissions(request, response, ['admin.users.permissions'])) return;
         const id = Number(request.params.id);
         const { permissions } = request.body ?? {};
         if (!Number.isSafeInteger(id) || id < 1 || !Array.isArray(permissions)
@@ -305,6 +428,105 @@ app.put('/api/admin/users/:id/password', async (request, response) => {
     } catch (error) {
         console.error('Error updating user password:', error);
         return response.status(500).json({ message: '无法更新用户密码。' });
+    }
+});
+
+function parsePlanInput(body) {
+    const {
+        name,
+        type,
+        price,
+        durationDays,
+        httpsQuota,
+        wssConnectionQuota,
+        wssDurationMinutes,
+        httpsOverage,
+        wssOverage,
+    } = body ?? {};
+    const priceFen = yuanToFen(price);
+    const httpsOverageFen = type === 'subscription' ? yuanToFen(httpsOverage) : 0;
+    const wssOverageFen = type === 'subscription' ? yuanToFen(wssOverage) : 0;
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 64
+        || !['subscription', 'resource'].includes(type)
+        || priceFen === null || !validateQuota(httpsQuota)
+        || !validateQuota(wssConnectionQuota) || !validateQuota(wssDurationMinutes)
+        || (wssDurationMinutes !== -1 && wssDurationMinutes > Math.floor(Number.MAX_SAFE_INTEGER / 60))
+        || (type === 'subscription'
+            && (!Number.isSafeInteger(durationDays) || durationDays < 1 || durationDays > 36500))
+        || (type === 'subscription' && (httpsOverageFen === null || wssOverageFen === null))) {
+        return null;
+    }
+    return {
+        name: name.trim(),
+        type,
+        priceFen,
+        durationSeconds: type === 'subscription' ? durationDays * 86400 : 0,
+        httpsQuota,
+        wssConnectionQuota,
+        wssDurationSeconds: wssDurationMinutes === -1 ? -1 : wssDurationMinutes * 60,
+        httpsOverageFen,
+        wssOverageFen,
+    };
+}
+
+app.post('/api/admin/plans', async (request, response) => {
+    try {
+        if (!await requirePermissions(request, response, ['admin.plan'])) return;
+        const plan = parsePlanInput(request.body);
+        if (!plan) return response.status(400).json({ message: '套餐设置无效，请检查名称、价格、类型和额度。' });
+        const id = await db.savePlan({ ...plan, id: null });
+        return response.status(201).json({ success: true, id });
+    } catch (error) {
+        console.error('Error creating plan:', error);
+        return response.status(500).json({ message: '无法创建套餐。' });
+    }
+});
+
+app.put('/api/admin/plans/:id', async (request, response) => {
+    try {
+        if (!await requirePermissions(request, response, ['admin.plan'])) return;
+        const id = Number(request.params.id);
+        const plan = parsePlanInput(request.body);
+        if (!Number.isSafeInteger(id) || id < 1 || !plan) {
+            return response.status(400).json({ message: '套餐编号或设置无效。' });
+        }
+        const updated = await db.savePlan({ ...plan, id });
+        if (updated === null) return response.status(404).json({ message: '套餐不存在。' });
+        return response.json({ success: true });
+    } catch (error) {
+        console.error('Error updating plan:', error);
+        return response.status(500).json({ message: '无法更新套餐。' });
+    }
+});
+
+app.delete('/api/admin/plans/:id', async (request, response) => {
+    try {
+        if (!await requirePermissions(request, response, ['admin.plan'])) return;
+        const id = Number(request.params.id);
+        if (!Number.isSafeInteger(id) || id < 1) {
+            return response.status(400).json({ message: '套餐编号无效。' });
+        }
+        if (!await db.deletePlan(id)) return response.status(404).json({ message: '套餐不存在。' });
+        return response.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting plan:', error);
+        return response.status(500).json({ message: '无法移除套餐。' });
+    }
+});
+
+app.put('/api/admin/billing-rates', async (request, response) => {
+    try {
+        if (!await requirePermissions(request, response, ['admin.plan'])) return;
+        const httpsPriceFen = yuanToFen(request.body?.httpsPrice);
+        const wssPriceFen = yuanToFen(request.body?.wssPrice);
+        if (httpsPriceFen === null || wssPriceFen === null) {
+            return response.status(400).json({ message: '默认计费价格无效。' });
+        }
+        await db.updateBillingRates(httpsPriceFen, wssPriceFen);
+        return response.json({ success: true });
+    } catch (error) {
+        console.error('Error updating default billing rates:', error);
+        return response.status(500).json({ message: '无法保存默认计费价格。' });
     }
 });
 

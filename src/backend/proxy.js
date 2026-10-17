@@ -151,10 +151,13 @@ function attachProxy(server, database, {
     const requestStates = new WeakMap();
 
     async function refundCharge(state, description) {
-        if (!state || state.refunded || !state.charged) return;
+        if (!state || state.refunded || (!state.charged && state.kind !== 'websocket')) return;
         state.refunded = true;
         try {
-            if (!await database.refundUserMinute(state.userId)) {
+            const refunded = state.kind === 'http'
+                ? await database.refundHttpsRequest(state.userId, state.charged)
+                : await database.cancelWssUsage(state.userId, state.usage);
+            if (!refunded) {
                 console.error(`Unable to refund ${description} for user ${state.userId}`);
             }
         } catch (error) {
@@ -211,8 +214,10 @@ function attachProxy(server, database, {
             return;
         }
 
+        let charge;
         try {
-            if (!await database.chargeUserMinute(userId)) {
+            charge = await database.chargeHttpsRequest(userId);
+            if (!charge) {
                 writeHttpResponse(response, 402, 'Payment Required');
                 return;
             }
@@ -222,7 +227,7 @@ function attachProxy(server, database, {
             return;
         }
 
-        const state = { charged: true, kind: 'http', refunded: false, userId };
+        const state = { charged: charge, kind: 'http', refunded: false, userId };
         requestStates.set(request, state);
 
         try {
@@ -272,30 +277,30 @@ function attachProxy(server, database, {
             return;
         }
 
-        let charged;
+        let usage;
         try {
-            charged = await database.chargeUserMinute(userId);
+            usage = await database.beginWssUsage(userId);
         } catch (error) {
-            console.error('Unable to charge for WebSocket connection:', error.message);
+            console.error('Unable to initialize WebSocket billing:', error.message);
             writeHttpError(socket, 503, 'Service Unavailable');
             return;
         }
-        if (!charged) {
+        if (!usage) {
             writeHttpError(socket, 402, 'Payment Required');
             return;
         }
 
         const state = {
-            charged: true,
+            charged: false,
             kind: 'websocket',
             refunded: false,
             upgraded: false,
+            usage,
             userId,
         };
         requestStates.set(request, state);
-
         socket.once('close', () => {
-            if (!state.upgraded) void refundCharge(state, 'initial WebSocket charge');
+            if (!state.upgraded) void refundCharge(state, 'initial WebSocket reservation');
         });
 
         try {
@@ -317,10 +322,10 @@ function attachProxy(server, database, {
         if (!state) return;
         proxyRequest.once('upgrade', (_response, proxySocket) => {
             state.upgraded = true;
-            startMinuteBilling(socket, proxySocket, state.userId, database);
+            startMinuteBilling(socket, proxySocket, state.userId, state.usage, database);
         });
         proxyRequest.once('response', () => {
-            void refundCharge(state, 'initial WebSocket charge');
+            void refundCharge(state, 'initial WebSocket reservation');
         });
     });
 
@@ -337,41 +342,45 @@ function attachProxy(server, database, {
     return { host, port };
 }
 
-function startMinuteBilling(clientSocket, upstreamSocket, userId, database) {
+function startMinuteBilling(clientSocket, upstreamSocket, userId, usage, database) {
     let timer;
     let stopped = false;
+    let settled = false;
+    const startedAt = Date.now();
     const stop = () => {
         stopped = true;
         clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        const durationSeconds = (Date.now() - startedAt) / 1000;
+        database.settleWssUsage(userId, usage, durationSeconds).then((success) => {
+            if (!success) console.error(`Unable to settle WebSocket billing for user ${userId}`);
+        }).catch((error) => {
+            console.error(`Unable to settle WebSocket billing for user ${userId}:`, error.message);
+        });
     };
     clientSocket.once('close', stop);
     upstreamSocket.once('close', stop);
 
-    const chargeNextMinute = async () => {
+    const checkNextMinute = async () => {
         if (stopped) return;
         try {
-            const charged = await database.chargeUserMinute(userId);
-            if (!charged) {
+            const elapsedSeconds = (Date.now() - startedAt) / 1000;
+            if (!await database.canContinueWssUsage(userId, usage, elapsedSeconds + 1)) {
                 clientSocket.destroy();
                 upstreamSocket.destroy();
                 return;
             }
-            if (stopped) {
-                if (!await database.refundUserMinute(userId)) {
-                    console.error(`Unable to refund a WebSocket minute charge for user ${userId}`);
-                }
-                return;
-            }
         } catch (error) {
-            console.error('Unable to charge for active WebSocket connection:', error.message);
+            console.error('Unable to check active WebSocket billing:', error.message);
             clientSocket.destroy();
             upstreamSocket.destroy();
             return;
         }
-        if (!stopped) timer = setTimeout(chargeNextMinute, 60_000);
+        if (!stopped) timer = setTimeout(checkNextMinute, 60_000);
     };
 
-    timer = setTimeout(chargeNextMinute, 60_000);
+    timer = setTimeout(checkNextMinute, 60_000);
 }
 
 export { attachProxy, buildUpstreamHeaders, readProxyHeaders };

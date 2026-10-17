@@ -70,18 +70,25 @@ DB_TYPE=mysql DB_HOST=localhost DB_PORT=3306 DB_USER=user DB_PASSWORD=password D
 登录后的工作空间对所有用户开放，首页显示根目录的 `TOUSER.md` 用户指南。管理员权限由以下权限节点控制：
 
 - `admin.users.read`：查看用户列表、权限和用户数据。
-- `admin.users.edit`：创建用户、修改用户权限和密码。
+- `admin.users.edit`：仅修改用户密码。
+- `admin.users.permissions`：创建用户、修改用户权限。
+- `admin.users.ban`：封禁和解封用户。
+- `admin.users.plan`：修改用户套餐。
+- `admin.users.balance`：设置或增加用户余额。
+- `admin.plan`：添加、编辑、移除套餐和设置默认计费价格。
 - `admin.pool.read`：查看号池账号和用户标识，不显示密码或登录令牌。
 - `admin.pool.edit`：添加和移除号池账号（支持账号密码或仅 token）、修改账号密码，或让密码账号立即登录并刷新 token。号池密码为代理登录上游服务所需，会以明文保存在数据库中；修改密码会清除缓存的登录令牌。
 - `admin.config.rw`：查看和修改 `.env` 配置、生成一次性兑换码。
-- `user.plan.read`：查看可用套餐。
+- `user.plan.read`：查看和购买套餐。
 - `user.key`：在左侧密钥管理页面为自己的 WebSocket 密钥命名、重命名、移除和轮换；此权限不允许查看其他用户的密钥。
 
 管理操作会由服务端校验登录会话及对应权限；新注册用户默认拥有 `user.login` 和 `user.plan.read` 权限。左侧个人中心始终显示，包含用户名、余额、易支付充值和兑换码兑换。
 
 ## 套餐与计费
 
-当前套餐为默认的“按量计费”，标价为 `0.1 元/分钟`。每条成功建立的 WebSocket 代理连接开始时扣除 0.1 元，此后每满一分钟扣除 0.1 元；余额不足时拒绝新连接，并在活动连接下一计费周期到来时关闭连接。余额以分为单位保存在用户记录中。易支付通知经签名校验，充值订单只能入账一次。
+管理员可在“套餐”页管理订阅和资源包，配置套餐价格、有效期、HTTPS 请求次数、WSS 连接次数和 WSS 时长。订阅有效期按天设置，并可单独设置超额 HTTPS 请求和 WSS 分钟费率；资源包额度耗尽后回退到默认按量计费。用户购买套餐从余额扣款，购买后替换当前套餐；管理员也可在用户管理中直接分配套餐。套餐额度中的 `-1` 表示不限量。WSS 使用时长按实际秒数累计，结算时向上取整到分钟。
+
+默认按量价格为 HTTPS `0.1 元/次`、WSS `0.1 元/分钟`，可在套餐页修改。HTTPS 每个代理请求计费一次；WSS 按连接实际时长结算，不足一分钟按一分钟计。余额不足时会拒绝新代理请求或在后续计费检查时关闭活动连接。余额以分为单位保存在用户记录中。易支付通知经签名校验，充值订单只能入账一次。
 
 复制 `.env.example` 为 `.env` 并填写易支付商户配置。`APP_BASE_URL` 应设置为外部可访问的 HTTPS 网站地址，以便易支付平台回调：
 
@@ -114,7 +121,7 @@ INSERT INTO bearer_tokens (`key`, id) VALUES ('<random-secret>', <user-id>);
 
 上游会收到客户端的普通请求头（不包括客户端的 Bearer 授权头和 Cookie），WebSocket 握手头由代理重建。设置 `WS_PROXY_HEADERS` 可用 JSON 对象增加或替换普通上游请求头，例如 `{"x-client-type":"proxy"}`；Cookie 始终由号池生成，协议/连接类请求头不允许覆盖。
 
-HTTP 请求与 WebSocket 共用 Bearer 密钥验证、号池 Cookie 注入和 `WS_PROXY_HEADERS` 上游请求头配置；每个 HTTP 请求固定扣除 1 分钟费用，WebSocket 连接仍按连接时长计费。
+HTTP 请求与 WebSocket 共用 Bearer 密钥验证、号池 Cookie 注入和 `WS_PROXY_HEADERS` 上游请求头配置；HTTP 按每次代理请求计费，WebSocket 按代理连接时长结算。
 
 ## 目录
 

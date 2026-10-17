@@ -406,10 +406,10 @@ test('proxies HTTP requests with pool cookies and the same filtered headers', as
             assert.equal(token, 'valid-token');
             return 42;
         },
-        async chargeUserMinute(userId) {
+        async chargeHttpsRequest(userId) {
             chargeCalls += 1;
             assert.equal(userId, 42);
-            return true;
+            return { kind: 'balance', amountFen: 10 };
         },
         async getRandomNumberPoolEntry() {
             poolLookupCalls += 1;
@@ -555,7 +555,7 @@ test('accepts a query token on WebSocket upgrades', async () => {
             validatedToken = token;
             return 42;
         },
-        async chargeUserMinute() { return false; },
+        async beginWssUsage() { return null; },
         async getRandomNumberPoolEntry() {
             poolLookupCalls += 1;
             return null;
@@ -598,7 +598,7 @@ test('rejects an authenticated WebSocket upgrade when the user cannot pay the fi
     const server = createServer();
     attachProxy(server, {
         async validateBearerToken() { return 42; },
-        async chargeUserMinute() { return false; },
+        async beginWssUsage() { return null; },
         async getRandomNumberPoolEntry() {
             poolLookupCalls += 1;
             return null;

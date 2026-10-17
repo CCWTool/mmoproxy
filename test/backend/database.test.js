@@ -39,9 +39,12 @@ legacyFixture.exec(`
     CREATE TABLE users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL
+        password TEXT NOT NULL,
+        permissions JSON NOT NULL DEFAULT '["user.login"]'
     );
-    INSERT INTO users (username, password) VALUES ('legacy-user', 'legacy-password');
+    INSERT INTO users (username, password, permissions) VALUES
+        ('legacy-user', 'legacy-password', '["user.login"]'),
+        ('legacy-admin', 'legacy-admin-password', '["user.login","admin.users.read","admin.users.edit"]');
 `);
 legacyFixture.close();
 process.env.SQLITE_PATH = legacyPath;
@@ -50,6 +53,19 @@ await migratedDb.ready;
 assert.ok(db.db.pragma('table_info(user_api_keys)').some((column) => column.name === 'name'));
 assert.equal(db.db.prepare('SELECT name FROM user_api_keys WHERE key_hash = ?')
     .get('legacy-api-key-hash').name, '');
+assert.deepEqual((await migratedDb.getUserById(
+    migratedDb.db.prepare('SELECT id FROM users WHERE username = ?').get('legacy-admin').id,
+)).permissions.sort(), [
+    'admin.plan',
+    'admin.users.balance',
+    'admin.users.ban',
+    'admin.users.edit',
+    'admin.users.permissions',
+    'admin.users.plan',
+    'admin.users.read',
+    'user.login',
+    'user.plan.read',
+].sort());
 process.env.SQLITE_PATH = path.join(directory, 'test.db');
 
 after(() => {
@@ -70,9 +86,14 @@ test('creates an initial administrator with the requested permissions and a SHA-
     assert.match(admin.password, /^[a-f0-9]{64}$/);
     assert.deepEqual(JSON.parse(admin.permissions).sort(), [
         'admin.config.rw',
+        'admin.plan',
         'admin.pool.edit',
         'admin.pool.read',
+        'admin.users.balance',
+        'admin.users.ban',
         'admin.users.edit',
+        'admin.users.permissions',
+        'admin.users.plan',
         'admin.users.read',
         'user.login',
         'user.plan.read',
@@ -91,15 +112,109 @@ test('hashes new user passwords, migrates legacy passwords, and manages user per
         createHash('sha256').update('legacy-password').digest('hex'));
     assert.ok(await migratedDb.login('legacy-user', 'legacy-password'));
 
-    assert.deepEqual(await db.getUserById(user.id), {
-        id: user.id,
-        username: 'proxy-user',
-        balanceFen: 0,
-        data: {},
-        permissions: ['user.login', 'user.plan.read', 'user.key'],
-    });
+    assert.deepEqual(
+        Object.fromEntries(Object.entries(await db.getUserById(user.id))
+            .filter(([key]) => ['id', 'username', 'balanceFen', 'data', 'permissions'].includes(key))),
+        {
+            id: user.id,
+            username: 'proxy-user',
+            balanceFen: 0,
+            data: {},
+            permissions: ['user.login', 'user.plan.read', 'user.key'],
+        },
+    );
     assert.equal(await db.updateUserPermissions(user.id, ['user.login', 'admin.pool.read']), true);
     assert.deepEqual((await db.getUserById(user.id)).permissions, ['user.login', 'admin.pool.read']);
+});
+
+test('manages plan types, purchases, quota use, overage billing, and user bans', async () => {
+    for (const permission of [
+        'admin.users.permissions',
+        'admin.users.ban',
+        'admin.users.plan',
+        'admin.users.balance',
+        'admin.plan',
+    ]) assert.ok(knownPermissions.includes(permission));
+
+    const user = db.db.prepare('SELECT id FROM users WHERE username = ?').get('proxy-user');
+    await db.updateAdminUser(user.id, { balanceFen: 900, balanceDeltaFen: 100 });
+    assert.equal((await db.getUserById(user.id)).balanceFen, 1000);
+    const planId = await db.savePlan({
+        id: null,
+        name: 'Test subscription',
+        type: 'subscription',
+        priceFen: 200,
+        durationSeconds: 86400,
+        httpsQuota: 1,
+        wssConnectionQuota: 1,
+        wssDurationSeconds: 90,
+        httpsOverageFen: 25,
+        wssOverageFen: 20,
+    });
+    assert.equal(await db.purchasePlan(user.id, planId), true);
+    assert.equal((await db.getUserById(user.id)).balanceFen, 800);
+    assert.equal((await db.getUserById(user.id)).planExpiresAt - Date.now() > 86_000_000, true);
+
+    assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'plan', planId, amountFen: 0 });
+    assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'balance', amountFen: 25 });
+    assert.equal((await db.getUserById(user.id)).balanceFen, 775);
+
+    const usage = await db.beginWssUsage(user.id);
+    assert.equal(usage.planId, planId);
+    assert.equal(await db.settleWssUsage(user.id, usage, 61), true);
+    let updated = await db.getUserById(user.id);
+    assert.equal(updated.balanceFen, 755);
+    assert.equal(updated.planWssConnectionsUsed, 1);
+    assert.equal(updated.planWssSecondsUsed, 61);
+
+    const nextUsage = await db.beginWssUsage(user.id);
+    assert.equal(await db.settleWssUsage(user.id, nextUsage, 61), true);
+    updated = await db.getUserById(user.id);
+    assert.equal(updated.balanceFen, 715);
+    assert.equal(updated.planWssConnectionsUsed, 2);
+    assert.equal(updated.planWssSecondsUsed, 122);
+
+    assert.deepEqual(await db.getBillingRates(), { httpsPriceFen: 10, wssPriceFen: 10 });
+    await db.updateBillingRates(14, 18);
+    assert.deepEqual(await db.getBillingRates(), { httpsPriceFen: 14, wssPriceFen: 18 });
+
+    const resourcePlanId = await db.savePlan({
+        id: null,
+        name: 'Test resource package',
+        type: 'resource',
+        priceFen: 100,
+        durationSeconds: 0,
+        httpsQuota: 0,
+        wssConnectionQuota: 0,
+        wssDurationSeconds: 0,
+        httpsOverageFen: 0,
+        wssOverageFen: 0,
+    });
+    await db.updateAdminUser(user.id, { balanceFen: 1000 });
+    assert.equal(await db.purchasePlan(user.id, resourcePlanId), true);
+    assert.deepEqual(await db.chargeHttpsRequest(user.id), { kind: 'balance', amountFen: 14 });
+    const resourceUsage = await db.beginWssUsage(user.id);
+    assert.equal(resourceUsage.planId, resourcePlanId);
+    assert.equal(resourceUsage.reservedFen, 18);
+    assert.equal(await db.settleWssUsage(user.id, resourceUsage, 1), true);
+    assert.equal((await db.getUserById(user.id)).balanceFen, 868);
+
+    await db.updateAdminUser(user.id, { isBanned: true });
+    assert.equal(await db.login('proxy-user', 'password'), null);
+    assert.equal(await db.beginWssUsage(user.id), null);
+    db.db.prepare('INSERT INTO bearer_tokens (`key`, id) VALUES (?, ?)').run('banned-user-token', user.id);
+    assert.equal(await db.validateBearerToken('banned-user-token'), null);
+    await db.updateAdminUser(user.id, { isBanned: false });
+    assert.ok(await db.login('proxy-user', 'password'));
+    await db.updateAdminUser(user.id, { planId: null, balanceFen: 0 });
+    await db.updateBillingRates(10, 10);
+});
+
+test('does not restore a revoked migrated administrator permission on restart', async () => {
+    const admin = db.db.prepare('SELECT id FROM users WHERE username LIKE ?').get('admin-%');
+    assert.equal(await db.updateUserPermissions(admin.id, ['user.login', 'admin.users.edit']), true);
+    await db.addPlanPermissionToExistingUsers();
+    assert.deepEqual((await db.getUserById(admin.id)).permissions, ['user.login', 'admin.users.edit', 'user.plan.read']);
 });
 
 test('credits payments and vouchers exactly once and charges active minutes atomically', async () => {

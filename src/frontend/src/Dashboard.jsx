@@ -5,7 +5,12 @@ const permissionOptions = [
   ['user.plan.read', '查看套餐'],
   ['user.key', '管理自己的密钥'],
   ['admin.users.read', '查看用户'],
-  ['admin.users.edit', '管理用户'],
+  ['admin.users.edit', '修改用户密码'],
+  ['admin.users.permissions', '修改用户权限及创建用户'],
+  ['admin.users.ban', '封禁/解封用户'],
+  ['admin.users.plan', '修改用户套餐'],
+  ['admin.users.balance', '修改用户余额'],
+  ['admin.plan', '管理套餐及计费'],
   ['admin.pool.read', '查看号池'],
   ['admin.pool.edit', '管理号池'],
   ['admin.config.rw', '系统设置'],
@@ -98,6 +103,30 @@ const paymentTypeNames = {
   usdt: 'USDT(TRC20) 支付',
 };
 
+function moneyToFen(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const match = String(value).match(/^(\d{1,7})(?:\.(\d{1,2}))?$/);
+  if (!match) return null;
+  return Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0'));
+}
+
+function hasActivePlan(profile, planId) {
+  return profile?.planId === planId
+    && (!profile.planExpiresAt || profile.planExpiresAt > Date.now());
+}
+
+const emptyPlan = {
+  name: '',
+  type: 'subscription',
+  price: '0.00',
+  durationDays: '30',
+  httpsQuota: '-1',
+  wssConnectionQuota: '-1',
+  wssDurationMinutes: '-1',
+  httpsOverage: '0.10',
+  wssOverage: '0.10',
+};
+
 const sectionLabels = {
   home: '首页',
   plan: '套餐',
@@ -131,7 +160,8 @@ export default function Dashboard({ user, onLogout }) {
   const [newApiKeyName, setNewApiKeyName] = useState('');
   const [editingApiKeyId, setEditingApiKeyId] = useState(null);
   const [editingApiKeyName, setEditingApiKeyName] = useState('');
-  const [expandedUser, setExpandedUser] = useState(null);
+  const [editingUser, setEditingUser] = useState(null);
+  const [userDraft, setUserDraft] = useState(null);
   const [newUsername, setNewUsername] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserPermissions, setNewUserPermissions] = useState(['user.plan.read']);
@@ -140,11 +170,28 @@ export default function Dashboard({ user, onLogout }) {
   const [newPoolToken, setNewPoolToken] = useState('');
   const [newPoolCredentialType, setNewPoolCredentialType] = useState('password');
   const [passwordEdits, setPasswordEdits] = useState({});
+  const [plans, setPlans] = useState(null);
+  const [billingRates, setBillingRates] = useState({ httpsPrice: '0.10', wssPrice: '0.10' });
+  const [planForm, setPlanForm] = useState(emptyPlan);
+  const [editingPlanId, setEditingPlanId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const canReadUsers = user.permissions.includes('admin.users.read') || user.permissions.includes('admin.users.edit');
-  const canEditUsers = user.permissions.includes('admin.users.edit');
+  const canChangePassword = user.permissions.includes('admin.users.edit');
+  const canChangePermissions = user.permissions.includes('admin.users.permissions');
+  const canBanUsers = user.permissions.includes('admin.users.ban');
+  const canChangeUserPlan = user.permissions.includes('admin.users.plan');
+  const canChangeBalance = user.permissions.includes('admin.users.balance');
+  const canManagePlans = user.permissions.includes('admin.plan');
+  const canModifyUsers = canChangePassword || canChangePermissions || canBanUsers || canChangeUserPlan || canChangeBalance;
+  const canReadUsers = [
+    'admin.users.read',
+    'admin.users.edit',
+    'admin.users.permissions',
+    'admin.users.ban',
+    'admin.users.plan',
+    'admin.users.balance',
+  ].some((permission) => user.permissions.includes(permission));
   const canReadPool = user.permissions.includes('admin.pool.read') || user.permissions.includes('admin.pool.edit');
   const canEditPool = user.permissions.includes('admin.pool.edit');
   const canManageKeys = user.permissions.includes('user.key');
@@ -152,7 +199,7 @@ export default function Dashboard({ user, onLogout }) {
   const canManageConfig = user.permissions.includes('admin.config.rw');
   const navigation = [
     { id: 'home', label: sectionLabels.home, icon: '⌂', visible: true },
-    { id: 'plan', label: sectionLabels.plan, icon: '◉', visible: canReadPlan },
+    { id: 'plan', label: sectionLabels.plan, icon: '◉', visible: canReadPlan || canManagePlans },
     { id: 'account', label: sectionLabels.account, icon: '♙', visible: true },
     { id: 'keys', label: sectionLabels.keys, icon: '⚿', visible: canManageKeys },
     { id: 'users', label: sectionLabels.users, icon: '♙', visible: canReadUsers },
@@ -173,7 +220,7 @@ export default function Dashboard({ user, onLogout }) {
     };
     window.addEventListener('popstate', syncSectionFromPath);
     return () => window.removeEventListener('popstate', syncSectionFromPath);
-  }, [canManageConfig, canManageKeys, canReadPlan, canReadPool, canReadUsers]);
+  }, [canManageConfig, canManageKeys, canManagePlans, canReadPlan, canReadPool, canReadUsers]);
 
   useEffect(() => {
     const path = activeSection === 'home' ? '/' : `/${activeSection}`;
@@ -193,6 +240,11 @@ export default function Dashboard({ user, onLogout }) {
         })
         .catch((loadError) => setError(loadError.message));
     }
+    if (activeSection === 'plan' && canReadPlan) {
+      api('/api/user/profile')
+        .then(setProfile)
+        .catch((loadError) => setError(loadError.message));
+    }
     if (activeSection === 'settings' && canManageConfig) {
       api('/api/admin/config')
         .then(({ content }) => setConfiguration(content))
@@ -208,6 +260,18 @@ export default function Dashboard({ user, onLogout }) {
         .then(({ users: rows }) => setUsers(rows))
         .catch((loadError) => setError(loadError.message));
     }
+    if ((activeSection === 'plan' && (canReadPlan || canManagePlans))
+      || (activeSection === 'users' && canChangeUserPlan)) {
+      api('/api/admin/plans')
+        .then((result) => {
+          setPlans(result.plans);
+          setBillingRates({
+            httpsPrice: (result.rates.httpsPriceFen / 100).toFixed(2),
+            wssPrice: (result.rates.wssPriceFen / 100).toFixed(2),
+          });
+        })
+        .catch((loadError) => setError(loadError.message));
+    }
     if (activeSection === 'pool' && canReadPool) {
       api('/api/admin/pool')
         .then(({ accounts: rows }) => setAccounts(rows))
@@ -218,7 +282,7 @@ export default function Dashboard({ user, onLogout }) {
         .then(({ keys }) => setUserKeys(keys))
         .catch((loadError) => setError(loadError.message));
     }
-  }, [activeSection, canManageConfig, canManageKeys, canReadPool, canReadUsers, readme]);
+  }, [activeSection, canChangeUserPlan, canManageConfig, canManageKeys, canManagePlans, canReadPlan, canReadPool, canReadUsers, readme]);
 
   async function runAction(action, message) {
     setBusy(true);
@@ -255,14 +319,133 @@ export default function Dashboard({ user, onLogout }) {
     }, '用户已创建。');
   }
 
-  async function savePermissions(id, permissions) {
+  function openUserEditor(row) {
+    setEditingUser(row);
+    setUserDraft({
+      permissions: [...row.permissions],
+      password: '',
+      isBanned: row.isBanned,
+      planId: row.planId === null ? '' : String(row.planId),
+      balance: (row.balanceFen / 100).toFixed(2),
+      balanceAdd: '0.00',
+    });
+  }
+
+  async function saveUserChanges(event) {
+    event.preventDefault();
+    const changes = {};
+    if (canChangePermissions
+      && JSON.stringify(userDraft.permissions) !== JSON.stringify(editingUser.permissions)) {
+      changes.permissions = userDraft.permissions;
+    }
+    if (canChangePassword && userDraft.password) changes.password = userDraft.password;
+    if (canBanUsers && userDraft.isBanned !== editingUser.isBanned) changes.isBanned = userDraft.isBanned;
+    if (canChangeUserPlan
+      && (userDraft.planId ? Number(userDraft.planId) : null) !== editingUser.planId) {
+      changes.planId = userDraft.planId ? Number(userDraft.planId) : null;
+    }
+    if (canChangeBalance) {
+      const balanceFen = moneyToFen(userDraft.balance);
+      const balanceDeltaFen = moneyToFen(userDraft.balanceAdd);
+      if (balanceFen === null || balanceDeltaFen === null) {
+        setError('余额金额格式无效。');
+        return;
+      }
+      if (balanceFen !== editingUser.balanceFen) changes.balanceFen = balanceFen;
+      if (balanceDeltaFen > 0) changes.balanceDeltaFen = balanceDeltaFen;
+    }
+    if (!Object.keys(changes).length) {
+      setEditingUser(null);
+      setUserDraft(null);
+      return;
+    }
     await runAction(async () => {
-      await api(`/api/admin/users/${id}/permissions`, {
+      await api(`/api/admin/users/${editingUser.id}`, {
         method: 'PUT',
-        body: JSON.stringify({ permissions }),
+        body: JSON.stringify(changes),
       });
       setUsers(await api('/api/admin/users').then((result) => result.users));
-    }, '用户权限已更新。');
+      setEditingUser(null);
+      setUserDraft(null);
+    }, '用户信息已保存。');
+  }
+
+  async function refreshPlans() {
+    const result = await api('/api/admin/plans');
+    setPlans(result.plans);
+    setBillingRates({
+      httpsPrice: (result.rates.httpsPriceFen / 100).toFixed(2),
+      wssPrice: (result.rates.wssPriceFen / 100).toFixed(2),
+    });
+    return result;
+  }
+
+  function editPlan(plan) {
+    setEditingPlanId(plan.id);
+    setPlanForm({
+      name: plan.name,
+      type: plan.type,
+      price: (plan.priceFen / 100).toFixed(2),
+      durationDays: plan.type === 'subscription' ? String(plan.durationSeconds / 86400) : '30',
+      httpsQuota: String(plan.httpsQuota),
+      wssConnectionQuota: String(plan.wssConnectionQuota),
+      wssDurationMinutes: String(plan.wssDurationSeconds === -1 ? -1 : plan.wssDurationSeconds / 60),
+      httpsOverage: (plan.httpsOverageFen / 100).toFixed(2),
+      wssOverage: (plan.wssOverageFen / 100).toFixed(2),
+    });
+  }
+
+  async function savePlan(event) {
+    event.preventDefault();
+    const body = {
+      ...planForm,
+      durationDays: Number(planForm.durationDays),
+      httpsQuota: Number(planForm.httpsQuota),
+      wssConnectionQuota: Number(planForm.wssConnectionQuota),
+      wssDurationMinutes: Number(planForm.wssDurationMinutes),
+    };
+    await runAction(async () => {
+      await api(editingPlanId ? `/api/admin/plans/${editingPlanId}` : '/api/admin/plans', {
+        method: editingPlanId ? 'PUT' : 'POST',
+        body: JSON.stringify(body),
+      });
+      await refreshPlans();
+      setEditingPlanId(null);
+      setPlanForm(emptyPlan);
+    }, editingPlanId ? '套餐已更新。' : '套餐已创建。');
+  }
+
+  async function deletePlan(plan) {
+    if (!window.confirm(`确定移除套餐“${plan.name}”吗？正在使用此套餐的用户将回到默认按量计费。`)) return;
+    await runAction(async () => {
+      await api(`/api/admin/plans/${plan.id}`, { method: 'DELETE' });
+      await refreshPlans();
+      if (canReadUsers) setUsers(await api('/api/admin/users').then((result) => result.users));
+      if (editingPlanId === plan.id) {
+        setEditingPlanId(null);
+        setPlanForm(emptyPlan);
+      }
+    }, '套餐已移除。');
+  }
+
+  async function saveBillingRates(event) {
+    event.preventDefault();
+    await runAction(async () => {
+      await api('/api/admin/billing-rates', {
+        method: 'PUT',
+        body: JSON.stringify(billingRates),
+      });
+      await refreshPlans();
+    }, '默认按量计费价格已保存。');
+  }
+
+  async function purchasePlan(plan) {
+    if (!window.confirm(`确定以 ${formatMoney(plan.priceFen)} 购买“${plan.name}”吗？这会替换当前套餐。`)) return;
+    await runAction(async () => {
+      await api(`/api/user/plans/${plan.id}/purchase`, { method: 'POST' });
+      await refreshPlans();
+      setProfile(await api('/api/user/profile'));
+    }, '套餐已购买并生效。');
   }
 
   async function createApiKey() {
@@ -318,15 +501,6 @@ export default function Dashboard({ user, onLogout }) {
       setError(logoutError.message || '退出登录失败，请重试。');
       setBusy(false);
     }
-  }
-
-  async function changeUserPassword(event, id) {
-    event.preventDefault();
-    const password = passwordEdits[id];
-    await runAction(async () => {
-      await api(`/api/admin/users/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) });
-      setPasswordEdits((current) => ({ ...current, [id]: '' }));
-    }, '用户密码已更新。');
   }
 
   async function createPoolAccount(event) {
@@ -398,7 +572,6 @@ export default function Dashboard({ user, onLogout }) {
       });
       setVoucherCode('');
       setProfile(await api('/api/user/profile'));
-      setPaymentUrl('');
     }, '兑换成功，余额已更新。');
   }
 
@@ -490,19 +663,77 @@ export default function Dashboard({ user, onLogout }) {
             </div>
           )}
 
-          {activeSection === 'plan' && canReadPlan && (
+          {activeSection === 'plan' && (canReadPlan || canManagePlans) && (
             <>
               <div className="page-heading">
-                <div><p className="page-eyebrow">BILLING PLAN</p><h1>套餐</h1><p className="page-subtitle">连接 WebSocket 代理时按使用时长计费。</p></div>
+                <div><p className="page-eyebrow">BILLING PLAN</p><h1>套餐</h1><p className="page-subtitle">购买订阅套餐或资源包；超出额度后按默认计费价格扣除余额。</p></div>
               </div>
-              <div className="content-card plan-card selected">
-                <div className="plan-card-heading">
-                  <div><span className="plan-indicator" /><div><h2>按量计费</h2><p>默认套餐</p></div></div>
-                  <span className="plan-price">¥0.1 <small>/ 分钟</small></span>
+              {canReadPlan && (
+                <div className="account-summary plan-summary content-card">
+                  <div><span>当前套餐</span><strong>{profile?.planName && (!profile.planExpiresAt || profile.planExpiresAt > Date.now()) ? profile.planName : '默认按量计费'}</strong></div>
+                  <div><span>余额</span><strong>{profile ? formatMoney(profile.balanceFen) : '--'}</strong></div>
+                  <div><span>到期时间</span><strong>{profile?.planExpiresAt ? new Date(profile.planExpiresAt).toLocaleString() : '无'}</strong></div>
                 </div>
-                <p className="plan-description">每条成功建立的代理连接按开始使用的分钟数扣费；余额不足时将无法连接或连接会结束。</p>
-                <span className="plan-default-tag">当前默认</span>
-              </div>
+              )}
+              {(canReadPlan || canManagePlans) && <div className="plan-grid">
+                {plans?.map((plan) => (
+                  <article className={`content-card plan-card${hasActivePlan(profile, plan.id) ? ' selected' : ''}`} key={plan.id}>
+                    <div className="plan-card-heading">
+                      <div><span className="plan-indicator" /><div><h2>{plan.name}</h2><p>{plan.type === 'subscription' ? `订阅 · ${plan.durationSeconds / 86400} 天` : '资源包 · 长期有效'}</p></div></div>
+                      <span className="plan-price">{formatMoney(plan.priceFen)}</span>
+                    </div>
+                    <p className="plan-description">
+                      HTTPS {plan.httpsQuota === -1 ? '不限' : `${plan.httpsQuota} 次`} · WSS {plan.wssConnectionQuota === -1 ? '不限' : `${plan.wssConnectionQuota} 次`} / {plan.wssDurationSeconds === -1 ? '不限时长' : `${plan.wssDurationSeconds / 60} 分钟`}
+                    </p>
+                    {plan.type === 'subscription' && (
+                      <p className="plan-description">套餐外：HTTPS {formatMoney(plan.httpsOverageFen)} / 次 · WSS {formatMoney(plan.wssOverageFen)} / 分钟</p>
+                    )}
+                    {canReadPlan && (hasActivePlan(profile, plan.id)
+                      ? <span className="plan-default-tag">当前套餐</span>
+                      : <button className="primary-button plan-buy-button" type="button" onClick={() => purchasePlan(plan)} disabled={busy}>购买</button>)}
+                    {canManagePlans && (
+                      <div className="row-actions plan-admin-actions">
+                        <button className="text-button" type="button" onClick={() => editPlan(plan)}>编辑</button>
+                        <button className="text-button remove-button" type="button" onClick={() => deletePlan(plan)} disabled={busy}>移除</button>
+                      </div>
+                    )}
+                  </article>
+                ))}
+                {plans === null && <p className="loading-note">正在读取套餐…</p>}
+                {plans && !plans.length && <p className="loading-note">暂无可用套餐。</p>}
+              </div>}
+              {canManagePlans && (
+                <>
+                  <form className="content-card create-form" onSubmit={saveBillingRates}>
+                    <div className="card-heading"><div><h2>默认按量计费价格</h2><p>未购买套餐或资源包额度耗尽时使用；金额按 HTTPS 每次和 WSS 每分钟计。</p></div></div>
+                    <div className="form-grid">
+                      <label>HTTPS（元/次）<input type="number" min="0" step="0.01" value={billingRates.httpsPrice} onChange={(event) => setBillingRates((current) => ({ ...current, httpsPrice: event.target.value }))} required /></label>
+                      <label>WSS（元/分钟）<input type="number" min="0" step="0.01" value={billingRates.wssPrice} onChange={(event) => setBillingRates((current) => ({ ...current, wssPrice: event.target.value }))} required /></label>
+                    </div>
+                    <button className="primary-button" type="submit" disabled={busy}>保存默认价格</button>
+                  </form>
+                  <form className="content-card create-form plan-editor" onSubmit={savePlan}>
+                    <div className="card-heading"><div><h2>{editingPlanId ? '编辑套餐' : '添加套餐'}</h2><p>额度 -1 表示不限制；订阅时间按天填写，WSS 时长按分钟填写。</p></div></div>
+                    <div className="form-grid">
+                      <label>套餐名称<input value={planForm.name} onChange={(event) => setPlanForm((current) => ({ ...current, name: event.target.value }))} maxLength={64} required /></label>
+                      <label>类型<select value={planForm.type} onChange={(event) => setPlanForm((current) => ({ ...current, type: event.target.value }))}><option value="subscription">订阅</option><option value="resource">资源包</option></select></label>
+                      <label>价格（元）<input type="number" min="0" step="0.01" value={planForm.price} onChange={(event) => setPlanForm((current) => ({ ...current, price: event.target.value }))} required /></label>
+                      {planForm.type === 'subscription' && <label>持续时间（天）<input type="number" min="1" max="36500" step="1" value={planForm.durationDays} onChange={(event) => setPlanForm((current) => ({ ...current, durationDays: event.target.value }))} required /></label>}
+                      <label>HTTPS 代理次数<input type="number" min="-1" step="1" value={planForm.httpsQuota} onChange={(event) => setPlanForm((current) => ({ ...current, httpsQuota: event.target.value }))} required /></label>
+                      <label>WSS 代理次数<input type="number" min="-1" step="1" value={planForm.wssConnectionQuota} onChange={(event) => setPlanForm((current) => ({ ...current, wssConnectionQuota: event.target.value }))} required /></label>
+                      <label>WSS 时长（分钟）<input type="number" min="-1" step="1" value={planForm.wssDurationMinutes} onChange={(event) => setPlanForm((current) => ({ ...current, wssDurationMinutes: event.target.value }))} required /></label>
+                      {planForm.type === 'subscription' && <>
+                        <label>套餐外 HTTPS（元/次）<input type="number" min="0" step="0.01" value={planForm.httpsOverage} onChange={(event) => setPlanForm((current) => ({ ...current, httpsOverage: event.target.value }))} required /></label>
+                        <label>套餐外 WSS（元/分钟）<input type="number" min="0" step="0.01" value={planForm.wssOverage} onChange={(event) => setPlanForm((current) => ({ ...current, wssOverage: event.target.value }))} required /></label>
+                      </>}
+                    </div>
+                    <div className="plan-form-actions">
+                      <button className="primary-button" type="submit" disabled={busy}>{editingPlanId ? '保存套餐' : '创建套餐'}</button>
+                      {editingPlanId && <button className="modal-cancel" type="button" onClick={() => { setEditingPlanId(null); setPlanForm(emptyPlan); }} disabled={busy}>取消编辑</button>}
+                    </div>
+                  </form>
+                </>
+              )}
             </>
           )}
 
@@ -639,7 +870,7 @@ export default function Dashboard({ user, onLogout }) {
                 <div><p className="page-eyebrow">ACCESS CONTROL</p><h1>用户管理</h1><p className="page-subtitle">查看用户、权限与关联数据。</p></div>
                 <span className="count-pill">{users === null ? '--' : users.length} 位用户</span>
               </div>
-              {canEditUsers && (
+              {canChangePermissions && (
                 <form className="content-card create-form" onSubmit={createUser}>
                   <div className="card-heading"><div><h2>新建用户</h2><p>新用户可使用用户名和密码登录。</p></div></div>
                   <div className="form-grid">
@@ -659,45 +890,79 @@ export default function Dashboard({ user, onLogout }) {
                 <div className="card-heading"><div><h2>用户列表</h2><p>用户密码仅保存为 SHA-256 摘要。</p></div></div>
                 <div className="table-scroll">
                   <table>
-                    <thead><tr><th>用户</th><th>权限</th><th>数据</th>{canEditUsers && <th>操作</th>}</tr></thead>
+                    <thead><tr><th>用户</th><th>权限</th><th>套餐 / 余额</th><th>数据</th>{canModifyUsers && <th>操作</th>}</tr></thead>
                     <tbody>
                       {users?.map((row) => (
                         <tr key={row.id}>
-                          <td><div className="table-user"><span className="table-avatar">{row.username.slice(0, 1).toUpperCase()}</span><span>{row.username}<small>ID {row.id}</small></span></div></td>
+                          <td><div className="table-user"><span className="table-avatar">{row.username.slice(0, 1).toUpperCase()}</span><span>{row.username}<small>ID {row.id}{row.isBanned ? ' · 已封禁' : ''}</small></span></div></td>
                           <td><PermissionTags permissions={row.permissions} /></td>
+                          <td><span>{row.planName || '默认按量计费'}</span><small className="table-secondary">{formatMoney(row.balanceFen)}</small></td>
                           <td><code className="data-preview">{JSON.stringify(row.data)}</code></td>
-                          {canEditUsers && (
+                          {canModifyUsers && (
                             <td>
                               <div className="row-actions">
-                                <button className="text-button" type="button" onClick={() => setExpandedUser(expandedUser === row.id ? null : row.id)}>权限</button>
+                                <button className="text-button" type="button" onClick={() => openUserEditor(row)}>修改</button>
                               </div>
-                              {expandedUser === row.id && (
-                                <div className="user-tools">
-                                  <p>权限设置</p>
-                                  <div className="permission-picker compact">
-                                    {permissionOptions.map(([permission, label]) => (
-                                      <label key={permission}><input type="checkbox" checked={row.permissions.includes(permission)} disabled={busy} onChange={(event) => {
-                                        const next = event.target.checked ? [...row.permissions, permission] : row.permissions.filter((item) => item !== permission);
-                                        savePermissions(row.id, next);
-                                      }} />{label}</label>
-                                    ))}
-                                  </div>
-                                  <form className="inline-password-form" onSubmit={(event) => changeUserPassword(event, row.id)}>
-                                    <input type="password" placeholder="设置新密码" value={passwordEdits[row.id] || ''} onChange={(event) => setPasswordEdits((current) => ({ ...current, [row.id]: event.target.value }))} required />
-                                    <button className="text-button" type="submit" disabled={busy}>修改密码</button>
-                                  </form>
-                                </div>
-                              )}
                             </td>
                           )}
                         </tr>
                       ))}
-                      {users === null && <tr><td className="empty-row" colSpan={canEditUsers ? 4 : 3}>--</td></tr>}
-                      {users && !users.length && <tr><td className="empty-row" colSpan={canEditUsers ? 4 : 3}>暂无用户。</td></tr>}
+                      {users === null && <tr><td className="empty-row" colSpan={canModifyUsers ? 5 : 4}>--</td></tr>}
+                      {users && !users.length && <tr><td className="empty-row" colSpan={canModifyUsers ? 5 : 4}>暂无用户。</td></tr>}
                     </tbody>
                   </table>
                 </div>
               </div>
+              {editingUser && userDraft && (
+                <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+                  if (event.target === event.currentTarget && !busy) {
+                    setEditingUser(null);
+                    setUserDraft(null);
+                  }
+                }}>
+                  <form className="user-edit-modal" role="dialog" aria-modal="true" aria-labelledby="user-edit-title" onSubmit={saveUserChanges}>
+                    <div className="modal-heading">
+                      <div><p className="page-eyebrow">USER SETTINGS</p><h2 id="user-edit-title">修改用户</h2></div>
+                      <button className="modal-close" type="button" aria-label="关闭" onClick={() => { setEditingUser(null); setUserDraft(null); }} disabled={busy}>×</button>
+                    </div>
+                    <div className="modal-user-summary">
+                      <strong>{editingUser.username}</strong>
+                      <span>当前权限</span>
+                      <PermissionTags permissions={editingUser.permissions} />
+                    </div>
+                    {canChangePermissions && (
+                      <fieldset className="permission-picker modal-permissions">
+                        <legend>修改权限</legend>
+                        {permissionOptions.map(([permission, label]) => (
+                          <label key={permission}><input
+                            type="checkbox"
+                            checked={userDraft.permissions.includes(permission)}
+                            onChange={(event) => setUserDraft((current) => ({
+                              ...current,
+                              permissions: event.target.checked
+                                ? [...current.permissions, permission]
+                                : current.permissions.filter((item) => item !== permission),
+                            }))}
+                          />{label}</label>
+                        ))}
+                      </fieldset>
+                    )}
+                    <div className="modal-fields">
+                      {canChangePassword && <label>设置新密码<input type="password" value={userDraft.password} onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))} placeholder="留空表示不修改" /></label>}
+                      {canBanUsers && <label className="modal-checkbox"><input type="checkbox" checked={userDraft.isBanned} onChange={(event) => setUserDraft((current) => ({ ...current, isBanned: event.target.checked }))} />封禁此用户</label>}
+                      {canChangeUserPlan && <label>用户套餐<select value={userDraft.planId} onChange={(event) => setUserDraft((current) => ({ ...current, planId: event.target.value }))}><option value="">默认按量计费</option>{plans?.map((plan) => <option value={plan.id} key={plan.id}>{plan.name}（{plan.type === 'subscription' ? '订阅' : '资源包'}）</option>)}</select></label>}
+                      {canChangeBalance && <>
+                        <label>设置余额（元）<input type="number" min="0" step="0.01" value={userDraft.balance} onChange={(event) => setUserDraft((current) => ({ ...current, balance: event.target.value }))} required /></label>
+                        <label>增加余额（元）<input type="number" min="0" step="0.01" value={userDraft.balanceAdd} onChange={(event) => setUserDraft((current) => ({ ...current, balanceAdd: event.target.value }))} required /></label>
+                      </>}
+                    </div>
+                    <div className="modal-actions">
+                      <button className="modal-cancel" type="button" onClick={() => { setEditingUser(null); setUserDraft(null); }} disabled={busy}>不保存</button>
+                      <button className="modal-save" type="submit" disabled={busy}>保存</button>
+                    </div>
+                  </form>
+                </div>
+              )}
             </>
           )}
 

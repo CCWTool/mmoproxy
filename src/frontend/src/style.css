@@ -861,6 +861,35 @@ a {
   padding: 22px;
 }
 
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 14px;
+}
+
+.plan-grid .plan-card {
+  margin-bottom: 0;
+}
+
+.plan-buy-button {
+  margin: 0;
+}
+
+.plan-admin-actions {
+  margin-top: 14px;
+}
+
+.plan-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.plan-form-actions .primary-button {
+  margin: 0 0 0 21px;
+}
+
 .plan-card.selected {
   border-color: #b9d0bd;
   box-shadow: 0 0 0 2px rgb(79 130 91 / 7%);
@@ -936,6 +965,10 @@ a {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-bottom: 18px;
+}
+
+.account-summary.plan-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .account-summary > div {
@@ -1533,28 +1566,170 @@ a {
   color: #8d2823;
 }
 
-.user-tools {
+.table-secondary {
+  display: block;
+  margin-top: 5px;
+  color: #89938a;
+  font-size: 10px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
   display: grid;
-  min-width: 230px;
-  gap: 7px;
-  margin-top: 11px;
-  padding: 11px;
-  border: 1px solid #edf0ec;
+  overflow-y: auto;
+  place-items: center;
+  padding: 24px;
+  background: rgb(24 35 27 / 38%);
+  backdrop-filter: blur(3px);
+}
+
+.user-edit-modal {
+  width: min(100%, 620px);
+  max-height: min(90vh, 820px);
+  overflow-y: auto;
+  padding: 23px;
+  border: 1px solid #e9eee8;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgb(22 40 26 / 24%);
+}
+
+.modal-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.modal-heading h2 {
+  margin: 0;
+  color: #26332a;
+  font-size: 20px;
+}
+
+.modal-heading .page-eyebrow {
+  margin: 0 0 8px;
+}
+
+.modal-close {
+  width: 32px;
+  height: 32px;
+  border: 0;
   border-radius: 6px;
+  background: #f6f8f5;
+  color: #728075;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.modal-user-summary {
+  display: grid;
+  gap: 9px;
+  margin: 19px 0 5px;
+  padding: 13px;
+  border: 1px solid #edf0ec;
+  border-radius: 7px;
   background: #fbfcfa;
 }
 
-.user-tools > p {
-  margin: 2px 0;
-  color: #879188;
-  font-size: 9px;
-  font-weight: 700;
+.modal-user-summary > strong {
+  color: #344238;
+  font-size: 14px;
 }
 
-.permission-picker.compact {
+.modal-user-summary > span {
+  color: #89938a;
+  font-size: 10px;
+}
+
+.modal-permissions {
+  margin: 16px 0;
+}
+
+.modal-fields {
   display: grid;
-  gap: 6px;
-  margin: 0 0 5px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+  margin-top: 16px;
+}
+
+.modal-fields label {
+  display: grid;
+  gap: 7px;
+  color: #657167;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.modal-fields input:not([type='checkbox']),
+.modal-fields select {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #e3e9e2;
+  border-radius: 6px;
+  outline: 0;
+  background: #fcfdfb;
+  color: #344238;
+  font-size: 11px;
+}
+
+.modal-fields input:focus,
+.modal-fields select:focus {
+  border-color: #88a98e;
+  box-shadow: 0 0 0 3px rgb(79 130 91 / 9%);
+}
+
+.modal-fields .modal-checkbox {
+  display: flex;
+  align-items: center;
+  align-self: center;
+}
+
+.modal-checkbox input {
+  accent-color: #b33b35;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 23px;
+  padding-top: 15px;
+  border-top: 1px solid #edf0ec;
+}
+
+.modal-cancel,
+.modal-save {
+  min-width: 82px;
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid #e0e6df;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  transition: box-shadow 150ms ease, transform 150ms ease;
+}
+
+.modal-cancel {
+  background: #fff;
+  color: #657167;
+}
+
+.modal-save {
+  border-color: #31664b;
+  background: #31664b;
+  color: #fff;
+}
+
+.modal-cancel:hover,
+.modal-save:hover {
+  box-shadow: 0 5px 14px rgb(34 57 39 / 18%);
+  transform: translateY(-1px);
 }
 
 .api-key {
@@ -1651,6 +1826,33 @@ a {
 }
 
 @media (max-width: 680px) {
+  .account-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .account-summary.plan-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .account-summary > div + div {
+    border-top: 1px solid #edf0ec;
+    border-left: 0;
+  }
+
+  .modal-backdrop {
+    place-items: start center;
+    padding: 12px;
+  }
+
+  .user-edit-modal {
+    max-height: calc(100vh - 24px);
+    padding: 18px;
+  }
+
+  .modal-fields {
+    grid-template-columns: 1fr;
+  }
+
   .dashboard {
     height: auto;
     min-height: 100vh;
